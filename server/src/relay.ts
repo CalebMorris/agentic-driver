@@ -1,11 +1,21 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 
-export function createRelayServer(port: number): WebSocketServer {
+export interface RelayServer {
+  wss: WebSocketServer;
+  waitForPlugin: () => Promise<void>;
+}
+
+export function createRelayServer(port: number): RelayServer {
   const wss = new WebSocketServer({ port });
 
   let pluginSocket: WebSocket | null = null;
   let agentSocket: WebSocket | null = null;
+
+  let resolvePluginConnected: (() => void) | null = null;
+  const pluginConnected = new Promise<void>((resolve) => {
+    resolvePluginConnected = resolve;
+  });
 
   function sendToAgent(payload: object): void {
     if (agentSocket?.readyState === WebSocket.OPEN) {
@@ -18,6 +28,7 @@ export function createRelayServer(port: number): WebSocketServer {
 
     if (clientPath === '/plugin') {
       pluginSocket = socket;
+      resolvePluginConnected?.();
       console.log('[relay] Plugin connected');
 
       socket.on('message', (data: Buffer) => {
@@ -63,5 +74,5 @@ export function createRelayServer(port: number): WebSocketServer {
     }
   });
 
-  return wss;
+  return { wss, waitForPlugin: () => pluginConnected };
 }

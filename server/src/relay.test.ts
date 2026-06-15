@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
-import { createRelayServer } from './relay';
+import { createRelayServer, RelayServer } from './relay';
 
 const TEST_PORT = 9998;
 
@@ -26,18 +26,18 @@ function closeClient(socket: WebSocket): Promise<void> {
 }
 
 describe('createRelayServer', () => {
-  let server: WebSocketServer;
+  let relay: RelayServer;
 
   beforeEach(async () => {
-    server = createRelayServer(TEST_PORT);
+    relay = createRelayServer(TEST_PORT);
     await new Promise<void>((resolve) => {
-      if (server.address()) resolve();
-      else server.once('listening', resolve);
+      if (relay.wss.address()) resolve();
+      else relay.wss.once('listening', resolve);
     });
   });
 
   afterEach(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => relay.wss.close(() => resolve()));
   });
 
   it('relays messages from agent to plugin', async () => {
