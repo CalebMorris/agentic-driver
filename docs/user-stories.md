@@ -4,7 +4,7 @@
 
 1. **Browser** — Brave (Chromium MV3 plugin) executing in the user's browser session
 2. **WebSocket Server** — Relay/coordination server running locally; bridges the agent and the plugin
-3. **Agent** — An autonomous AI agent (framework TBD) that drives the browser via discrete actions
+3. **Agent** — Claude CLI via MCP adapter, which drives the browser via discrete actions
 
 ---
 
