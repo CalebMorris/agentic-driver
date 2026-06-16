@@ -59,11 +59,28 @@ function sendControlMessage(payload) {
   }
 }
 
+function updateActionIcon(isActive) {
+  const color = isActive ? '#dc2626' : '#6b7280';
+  const imageDataBySize = {};
+  for (const size of [16, 32, 48]) {
+    const canvas = new OffscreenCanvas(size, size);
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size / 2 - 1, 0, 2 * Math.PI);
+    ctx.fill();
+    imageDataBySize[size] = ctx.getImageData(0, 0, size, size);
+  }
+  chrome.action.setIcon({ imageData: imageDataBySize });
+}
+
 async function enableDriving() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) {
     pinnedTabId = tab.id;
     drivingEnabled = true;
+    updateActionIcon(true);
     sendControlMessage({ type: 'driving_enabled', tabId: tab.id });
   }
 }
@@ -71,6 +88,7 @@ async function enableDriving() {
 function disableDriving() {
   pinnedTabId = null;
   drivingEnabled = false;
+  updateActionIcon(false);
   sendControlMessage({ type: 'driving_disabled' });
 }
 
@@ -300,4 +318,5 @@ function errorResponse(id, code, message) {
   return { id, type: 'error', code, message };
 }
 
+updateActionIcon(false);
 connect();
