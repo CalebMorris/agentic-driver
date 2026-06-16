@@ -25,6 +25,11 @@ function closeClient(socket: WebSocket): Promise<void> {
   });
 }
 
+// Yield to the event loop so the relay can process an in-flight message.
+function waitForRelayProcess(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 10));
+}
+
 describe('createRelayServer', () => {
   let relay: RelayServer;
 
@@ -40,11 +45,30 @@ describe('createRelayServer', () => {
     await new Promise<void>((resolve) => relay.wss.close(() => resolve()));
   });
 
-  it('relays messages from agent to plugin', async () => {
+  // ── Driving gate ────────────────────────────────────────────────────────────
+
+  it('returns DRIVING_DISABLED when driving has not been enabled', async () => {
+    const agentSocket = await connectClient('/agent');
+
+    const receivePromise = waitForMessage(agentSocket);
+    agentSocket.send(JSON.stringify({ id: '1', type: 'read_html' }));
+
+    const received = await receivePromise as { id: string; type: string; code: string };
+    expect(received.id).toBe('1');
+    expect(received.type).toBe('error');
+    expect(received.code).toBe('DRIVING_DISABLED');
+
+    await closeClient(agentSocket);
+  });
+
+  it('relays agent messages to plugin after driving enabled', async () => {
     const pluginSocket = await connectClient('/plugin');
     const agentSocket = await connectClient('/agent');
 
-    const message = { id: '1', type: 'read_html' };
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    const message = { id: '2', type: 'read_html' };
     const receivePromise = waitForMessage(pluginSocket);
     agentSocket.send(JSON.stringify(message));
 
@@ -54,6 +78,67 @@ describe('createRelayServer', () => {
     await closeClient(pluginSocket);
     await closeClient(agentSocket);
   });
+
+  it('returns DRIVING_DISABLED after driving is disabled again', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_disabled' }));
+    await waitForRelayProcess();
+
+    const receivePromise = waitForMessage(agentSocket);
+    agentSocket.send(JSON.stringify({ id: '3', type: 'read_html' }));
+
+    const received = await receivePromise as { type: string; code: string };
+    expect(received.type).toBe('error');
+    expect(received.code).toBe('DRIVING_DISABLED');
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
+  it('returns DRIVING_DISABLED after plugin disconnects', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    await closeClient(pluginSocket);
+    await waitForRelayProcess();
+
+    const receivePromise = waitForMessage(agentSocket);
+    agentSocket.send(JSON.stringify({ id: '4', type: 'read_html' }));
+
+    const received = await receivePromise as { type: string; code: string };
+    expect(received.type).toBe('error');
+    expect(received.code).toBe('DRIVING_DISABLED');
+
+    await closeClient(agentSocket);
+  });
+
+  it('does not forward driving_enabled or driving_disabled to agent', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    let agentReceivedMessage = false;
+    agentSocket.on('message', () => { agentReceivedMessage = true; });
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+    pluginSocket.send(JSON.stringify({ type: 'driving_disabled' }));
+    await waitForRelayProcess();
+
+    expect(agentReceivedMessage).toBe(false);
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
+  // ── Relay forwarding ────────────────────────────────────────────────────────
 
   it('relays messages from plugin to agent', async () => {
     const pluginSocket = await connectClient('/plugin');
@@ -70,17 +155,24 @@ describe('createRelayServer', () => {
     await closeClient(agentSocket);
   });
 
-  it('returns error to agent when plugin is not connected', async () => {
+  it('returns UNKNOWN when plugin is not connected but driving was previously enabled', async () => {
+    const pluginSocket = await connectClient('/plugin');
     const agentSocket = await connectClient('/agent');
 
-    const message = { id: '42', type: 'read_html' };
-    const receivePromise = waitForMessage(agentSocket);
-    agentSocket.send(JSON.stringify(message));
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
 
-    const received = await receivePromise as { id: string; type: string; code: string };
-    expect(received.id).toBe('42');
+    // Disconnect the plugin without sending driving_disabled
+    pluginSocket.close();
+    await waitForRelayProcess();
+
+    const receivePromise = waitForMessage(agentSocket);
+    agentSocket.send(JSON.stringify({ id: '5', type: 'read_html' }));
+
+    const received = await receivePromise as { type: string; code: string };
+    // Plugin disconnect resets drivingEnabled, so DRIVING_DISABLED is returned
     expect(received.type).toBe('error');
-    expect(received.code).toBe('UNKNOWN');
+    expect(received.code).toBe('DRIVING_DISABLED');
 
     await closeClient(agentSocket);
   });

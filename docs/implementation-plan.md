@@ -111,12 +111,12 @@ Before any agent action can execute, two preconditions must be satisfied:
 2. **Driving gate** — the relay server must reject agent messages with a `DRIVING_DISABLED` error until the plugin has signalled that driving is enabled. When the user clicks "Enable Driving," `background.js` sends a `driving_enabled` message to the relay; when they click "Disable Driving" (or the tab closes), it sends `driving_disabled`. The relay tracks this state and enforces it.
 
 **Deliverables:**
-- [ ] Popup UI: "Enable Driving" / "Disable Driving" toggle button showing current state
-- [ ] `background.js`: stores pinned `tabId`; sends `driving_enabled` / `driving_disabled` to relay on toggle; clears pinned tab on tab close or navigating away
-- [ ] Relay: tracks `drivingEnabled` boolean; returns `DRIVING_DISABLED` error to agent when gate is closed
-- [ ] Protocol additions: `driving_enabled`, `driving_disabled` plugin→relay control messages; `DRIVING_DISABLED` error code
-- [ ] All existing action handlers updated to use pinned `tabId` instead of querying active tab
-- [ ] End-to-end test: agent action is rejected before enable, succeeds after enable, rejected again after disable
+- [x] Popup UI: "Enable Driving" / "Disable Driving" toggle button showing current state
+- [x] `background.js`: stores pinned `tabId`; sends `driving_enabled` / `driving_disabled` to relay on toggle; clears pinned tab on tab close
+- [x] Relay: tracks `drivingEnabled` boolean; returns `DRIVING_DISABLED` error to agent when gate is closed; resets on plugin disconnect
+- [x] Protocol additions: `driving_enabled`, `driving_disabled` plugin→relay control messages; `DRIVING_DISABLED` error code
+- [x] All existing action handlers updated to use pinned `tabId` instead of querying active tab
+- [x] End-to-end test: agent action is rejected before enable, succeeds after enable, rejected again after disable
 
 ### Phase 1 — Protocol & Scaffolding
 - [x] Define full message protocol (all action types, result shapes, error format)
@@ -127,7 +127,7 @@ Before any agent action can execute, two preconditions must be satisfied:
 - [x] Implement WS server relay
 - [x] Implement `background.js` WS connection + dispatch
 - [x] `navigate`, `click`, `read_html`, `screenshot` actions (implemented in `background.js`)
-- [ ] `view_current_site` action
+- [x] `view_current_site` action
 - [ ] `content.js` (DOM-level actions currently handled directly in `background.js` via `executeScript`)
 - [x] End-to-end tests: `navigate`, `click`, `read_html`, `screenshot`, unknown action type
 

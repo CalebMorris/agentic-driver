@@ -4,18 +4,45 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 220px;
+      width: 240px;
       padding: 14px;
       font-family: system-ui, sans-serif;
       font-size: 13px;
       color: #333;
     }
-    h1 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
-    p  { margin: 0; color: #666; line-height: 1.4; }
+    h1 { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
+    #status {
+      margin: 0 0 12px;
+      color: #555;
+      line-height: 1.4;
+      min-height: 1.4em;
+    }
+    button {
+      width: 100%;
+      padding: 7px 0;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .primary {
+      background: #22c55e;
+      color: #fff;
+    }
+    .primary:hover { background: #16a34a; }
+    .danger {
+      background: #ef4444;
+      color: #fff;
+    }
+    .danger:hover { background: #dc2626; }
+    .muted { color: #888; font-style: italic; }
   </style>
 </head>
 <body>
   <h1>Agentic Driver</h1>
-  <p>Waiting for agent connection&hellip;</p>
+  <p id="status" class="muted">Loading&hellip;</p>
+  <button id="toggle-btn" disabled>Loading&hellip;</button>
+  <script src="popup.js"></script>
 </body>
 </html>

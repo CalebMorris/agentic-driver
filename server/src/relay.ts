@@ -11,6 +11,7 @@ export function createRelayServer(port: number): RelayServer {
 
   let pluginSocket: WebSocket | null = null;
   let agentSocket: WebSocket | null = null;
+  let drivingEnabled = false;
 
   let resolvePluginConnected: (() => void) | null = null;
   const pluginConnected = new Promise<void>((resolve) => {
@@ -32,6 +33,24 @@ export function createRelayServer(port: number): RelayServer {
       console.log('[relay] Plugin connected');
 
       socket.on('message', (data: Buffer) => {
+        let parsed: { type?: string };
+        try {
+          parsed = JSON.parse(data.toString());
+        } catch {
+          return;
+        }
+
+        if (parsed.type === 'driving_enabled') {
+          drivingEnabled = true;
+          console.log('[relay] Driving enabled');
+          return;
+        }
+        if (parsed.type === 'driving_disabled') {
+          drivingEnabled = false;
+          console.log('[relay] Driving disabled');
+          return;
+        }
+
         if (agentSocket?.readyState === WebSocket.OPEN) {
           agentSocket.send(data.toString());
         }
@@ -39,6 +58,7 @@ export function createRelayServer(port: number): RelayServer {
 
       socket.on('close', () => {
         pluginSocket = null;
+        drivingEnabled = false;
         console.log('[relay] Plugin disconnected');
       });
 
@@ -47,20 +67,32 @@ export function createRelayServer(port: number): RelayServer {
       console.log('[relay] Agent connected');
 
       socket.on('message', (data: Buffer) => {
+        let message: { id?: string };
+        try {
+          message = JSON.parse(data.toString());
+        } catch {
+          return;
+        }
+
+        if (!drivingEnabled) {
+          sendToAgent({
+            id: message.id ?? '',
+            type: 'error',
+            code: 'DRIVING_DISABLED',
+            message: 'Driving has not been enabled via the plugin UI',
+          });
+          return;
+        }
+
         if (pluginSocket?.readyState === WebSocket.OPEN) {
           pluginSocket.send(data.toString());
         } else {
-          try {
-            const message = JSON.parse(data.toString()) as { id?: string };
-            sendToAgent({
-              id: message.id ?? '',
-              type: 'error',
-              code: 'UNKNOWN',
-              message: 'Plugin is not connected',
-            });
-          } catch {
-            // malformed JSON — drop silently
-          }
+          sendToAgent({
+            id: message.id ?? '',
+            type: 'error',
+            code: 'UNKNOWN',
+            message: 'Plugin is not connected',
+          });
         }
       });
 

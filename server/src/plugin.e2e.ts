@@ -1,5 +1,5 @@
 import { test, expect, chromium } from '@playwright/test';
-import type { BrowserContext } from '@playwright/test';
+import type { BrowserContext, Page, Worker } from '@playwright/test';
 import { WebSocket as WsClient, WebSocketServer } from 'ws';
 import * as http from 'http';
 import * as fs from 'fs';
@@ -25,6 +25,22 @@ function request(agent: WsClient, message: object): Promise<unknown> {
     agent.once('message', (data) => resolve(JSON.parse(data.toString())));
     agent.send(JSON.stringify(message));
   });
+}
+
+// Yield to the event loop so the relay can process an in-flight message.
+function waitForRelayProcess(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 50));
+}
+
+// Enable driving on the service worker for the currently active tab.
+async function enableDrivingOnWorker(worker: Worker): Promise<void> {
+  await worker.evaluate(() => (globalThis as unknown as { enableDriving: () => Promise<void> }).enableDriving());
+  await waitForRelayProcess();
+}
+
+async function disableDrivingOnWorker(worker: Worker): Promise<void> {
+  await worker.evaluate(() => (globalThis as unknown as { disableDriving: () => void }).disableDriving());
+  await waitForRelayProcess();
 }
 
 test.describe('Plugin E2E', () => {
@@ -78,6 +94,7 @@ test.describe('Plugin E2E', () => {
       '/nobutton':  '<html><body><p>No button here</p></body></html>',
       '/capture':   '<html><body><h1>Screenshot test</h1></body></html>',
       '/navigate':  '<html><body><h1>Navigation target</h1></body></html>',
+      '/view':      '<html><head><title>View Test Page</title></head><body><h1>View</h1></body></html>',
     };
     testServer = http.createServer((req, res) => {
       const html = routes[req.url ?? '/'] ?? routes['/'];
@@ -96,119 +113,166 @@ test.describe('Plugin E2E', () => {
     fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
-  // ── read_html ────────────────────────────────────────────────────────────
+  // ── Phase 0: Driving Gate ─────────────────────────────────────────────────
+  // These tests run before any driving is enabled.
 
-  test('read_html returns full page HTML', async () => {
+  test('agent action is rejected when driving is not enabled', async () => {
+    const response = await request(agent, { id: 'g1', type: 'read_html' }) as Record<string, string>;
+
+    expect(response.type).toBe('error');
+    expect(response.code).toBe('DRIVING_DISABLED');
+  });
+
+  test('agent action succeeds after driving is enabled', async () => {
+    const [worker] = browserContext.serviceWorkers();
     const page = await browserContext.newPage();
     await page.goto(`http://localhost:${testServerPort}/hello`);
 
-    const response = await request(agent, { id: '1', type: 'read_html' }) as any;
+    await enableDrivingOnWorker(worker);
 
-    expect(response.id).toBe('1');
+    const response = await request(agent, { id: 'g2', type: 'read_html' }) as Record<string, unknown>;
+
     expect(response.type).toBe('result');
-    expect(response.data.html).toContain('<h1>Hello World</h1>');
+    expect((response.data as Record<string, string>).html).toContain('<h1>Hello World</h1>');
 
     await page.close();
   });
 
-  test('read_html with selector returns matching subtree', async () => {
-    const page = await browserContext.newPage();
-    await page.goto(`http://localhost:${testServerPort}/main`);
+  test('agent action is rejected again after driving is disabled', async () => {
+    const [worker] = browserContext.serviceWorkers();
+    await disableDrivingOnWorker(worker);
 
-    const response = await request(agent, { id: '2', type: 'read_html', selector: '#main' }) as any;
-
-    expect(response.type).toBe('result');
-    expect(response.data.html).toContain('<p>Content</p>');
-    expect(response.data.html).not.toContain('<body>');
-
-    await page.close();
-  });
-
-  test('read_html with missing selector returns ELEMENT_NOT_FOUND', async () => {
-    const page = await browserContext.newPage();
-    await page.goto(`http://localhost:${testServerPort}/plain`);
-
-    const response = await request(agent, { id: '3', type: 'read_html', selector: '#does-not-exist' }) as any;
+    const response = await request(agent, { id: 'g3', type: 'read_html' }) as Record<string, string>;
 
     expect(response.type).toBe('error');
-    expect(response.code).toBe('ELEMENT_NOT_FOUND');
-
-    await page.close();
+    expect(response.code).toBe('DRIVING_DISABLED');
   });
 
-  // ── navigate ─────────────────────────────────────────────────────────────
+  // ── Actions (driving enabled on a persistent pinned tab) ──────────────────
+  // All action tests share a single driving page. Driving is enabled in beforeAll
+  // and the same tab is used for the duration of this section.
 
-  test('navigate loads a URL and returns complete', async () => {
-    const page = await browserContext.newPage();
-    await page.goto(`http://localhost:${testServerPort}/`);
-    const targetUrl = `http://localhost:${testServerPort}/navigate`;
+  test.describe('Actions', () => {
+    let drivingPage: Page;
 
-    const response = await request(agent, { id: '4', type: 'navigate', url: targetUrl }) as any;
+    test.beforeAll(async () => {
+      const [worker] = browserContext.serviceWorkers();
 
-    expect(response.id).toBe('4');
-    expect(response.type).toBe('result');
-    expect(response.data.status).toBe('complete');
-    expect(response.data.url).toContain(`localhost:${testServerPort}`);
+      drivingPage = await browserContext.newPage();
+      await drivingPage.goto(`http://localhost:${testServerPort}/`);
 
-    await page.close();
-  });
+      await enableDrivingOnWorker(worker);
+    });
 
-  // ── click ─────────────────────────────────────────────────────────────────
+    test.afterAll(async () => {
+      const [worker] = browserContext.serviceWorkers();
+      await disableDrivingOnWorker(worker);
+      await drivingPage.close();
+    });
 
-  test('click triggers the element and returns ok', async () => {
-    const page = await browserContext.newPage();
-    await page.goto(`http://localhost:${testServerPort}/button`);
+    // ── view_current_site ───────────────────────────────────────────────────
 
-    const response = await request(agent, { id: '5', type: 'click', selector: '#btn' }) as any;
+    test('view_current_site returns pinned tab info', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/view`);
 
-    expect(response.type).toBe('result');
-    expect(response.data.status).toBe('ok');
+      const response = await request(agent, { id: 'v1', type: 'view_current_site' }) as Record<string, unknown>;
 
-    const wasClicked = await page.locator('#btn').getAttribute('data-clicked');
-    expect(wasClicked).toBe('true');
+      expect(response.type).toBe('result');
+      const data = response.data as Record<string, unknown>;
+      expect(typeof data.id).toBe('number');
+      expect((data.url as string)).toContain(`localhost:${testServerPort}/view`);
+      expect(data.title).toBe('View Test Page');
+    });
 
-    await page.close();
-  });
+    // ── read_html ───────────────────────────────────────────────────────────
 
-  test('click with missing selector returns ELEMENT_NOT_FOUND', async () => {
-    const page = await browserContext.newPage();
-    await page.goto(`http://localhost:${testServerPort}/nobutton`);
+    test('read_html returns full page HTML', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/hello`);
 
-    const response = await request(agent, { id: '6', type: 'click', selector: '#missing-btn' }) as any;
+      const response = await request(agent, { id: '1', type: 'read_html' }) as Record<string, unknown>;
 
-    expect(response.type).toBe('error');
-    expect(response.code).toBe('ELEMENT_NOT_FOUND');
+      expect(response.id).toBe('1');
+      expect(response.type).toBe('result');
+      expect((response.data as Record<string, string>).html).toContain('<h1>Hello World</h1>');
+    });
 
-    await page.close();
-  });
+    test('read_html with selector returns matching subtree', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/main`);
 
-  // ── screenshot ────────────────────────────────────────────────────────────
+      const response = await request(agent, { id: '2', type: 'read_html', selector: '#main' }) as Record<string, unknown>;
 
-  test('screenshot returns a base64-encoded PNG', async () => {
-    const page = await browserContext.newPage();
-    await page.goto(`http://localhost:${testServerPort}/capture`);
+      expect(response.type).toBe('result');
+      const html = (response.data as Record<string, string>).html;
+      expect(html).toContain('<p>Content</p>');
+      expect(html).not.toContain('<body>');
+    });
 
-    const response = await request(agent, { id: '7', type: 'screenshot' }) as any;
+    test('read_html with missing selector returns ELEMENT_NOT_FOUND', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/plain`);
 
-    expect(response.type).toBe('result');
-    expect(typeof response.data.image).toBe('string');
-    // PNG magic bytes in base64 always start with 'iVBOR'
-    expect(response.data.image).toMatch(/^iVBOR/);
+      const response = await request(agent, { id: '3', type: 'read_html', selector: '#does-not-exist' }) as Record<string, string>;
 
-    await page.close();
-  });
+      expect(response.type).toBe('error');
+      expect(response.code).toBe('ELEMENT_NOT_FOUND');
+    });
 
-  // ── unknown action ────────────────────────────────────────────────────────
+    // ── navigate ────────────────────────────────────────────────────────────
 
-  test('unknown action type returns UNKNOWN error', async () => {
-    const page = await browserContext.newPage();
-    await page.goto(`http://localhost:${testServerPort}/`);
+    test('navigate loads a URL and returns complete', async () => {
+      const targetUrl = `http://localhost:${testServerPort}/navigate`;
 
-    const response = await request(agent, { id: '8', type: 'nonexistent_action' }) as any;
+      const response = await request(agent, { id: '4', type: 'navigate', url: targetUrl }) as Record<string, unknown>;
 
-    expect(response.type).toBe('error');
-    expect(response.code).toBe('UNKNOWN');
+      expect(response.id).toBe('4');
+      expect(response.type).toBe('result');
+      expect((response.data as Record<string, string>).status).toBe('complete');
+      expect((response.data as Record<string, string>).url).toContain(`localhost:${testServerPort}`);
+    });
 
-    await page.close();
+    // ── click ───────────────────────────────────────────────────────────────
+
+    test('click triggers the element and returns ok', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/button`);
+
+      const response = await request(agent, { id: '5', type: 'click', selector: '#btn' }) as Record<string, unknown>;
+
+      expect(response.type).toBe('result');
+      expect((response.data as Record<string, string>).status).toBe('ok');
+
+      const wasClicked = await drivingPage.locator('#btn').getAttribute('data-clicked');
+      expect(wasClicked).toBe('true');
+    });
+
+    test('click with missing selector returns ELEMENT_NOT_FOUND', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/nobutton`);
+
+      const response = await request(agent, { id: '6', type: 'click', selector: '#missing-btn' }) as Record<string, string>;
+
+      expect(response.type).toBe('error');
+      expect(response.code).toBe('ELEMENT_NOT_FOUND');
+    });
+
+    // ── screenshot ──────────────────────────────────────────────────────────
+
+    test('screenshot returns a base64-encoded PNG', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/capture`);
+
+      const response = await request(agent, { id: '7', type: 'screenshot' }) as Record<string, unknown>;
+
+      expect(response.type).toBe('result');
+      const image = (response.data as Record<string, string>).image;
+      expect(typeof image).toBe('string');
+      // PNG magic bytes in base64 always start with 'iVBOR'
+      expect(image).toMatch(/^iVBOR/);
+    });
+
+    // ── unknown action ──────────────────────────────────────────────────────
+
+    test('unknown action type returns UNKNOWN error', async () => {
+      const response = await request(agent, { id: '8', type: 'nonexistent_action' }) as Record<string, string>;
+
+      expect(response.type).toBe('error');
+      expect(response.code).toBe('UNKNOWN');
+    });
   });
 });
