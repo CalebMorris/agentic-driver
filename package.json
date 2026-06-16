@@ -1,0 +1,25 @@
+{
+  "name": "agentic-driver",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "workspaces": [
+    "server",
+    "mcp"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev": "npm run dev -w server",
+    "test:e2e": "npm run test:e2e -w server",
+    "install:e2e": "npm run install:e2e -w server"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.7.0",
+    "vitest": "^2.0.0"
+  }
+}

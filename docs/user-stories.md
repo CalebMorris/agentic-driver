@@ -6,7 +6,6 @@
 2. **WebSocket Server** — Relay/coordination server running locally; bridges the agent and the plugin
 3. **Agent** — Claude CLI via MCP adapter, which drives the browser via discrete actions
 
----
 
 ## Core Flows
 
@@ -21,7 +20,6 @@
 4. Plugin → WS Server: sends back a result (e.g. success / error / return value)
 5. WS Server → Agent: relays the result
 
----
 
 ### US-02: Agent requests a human handoff
 
@@ -37,7 +35,6 @@
 7. WS Server → Agent: relays resume signal
 8. Agent: resumes autonomous driving
 
----
 
 ### US-03: Plugin relays page content to agent
 
@@ -50,7 +47,6 @@
 4. Plugin → WS Server: `{ type: "result", data: "<html>..." }`
 5. WS Server → Agent: relays content
 
----
 
 ### US-04: Plugin captures and sends a screenshot
 
@@ -63,7 +59,6 @@
 4. Plugin → WS Server: `{ type: "result", data: { "image": "<base64-png>" } }`
 5. WS Server → Agent: relays image
 
----
 
 ### US-05: Agent navigates to a URL
 
@@ -76,7 +71,6 @@
 4. Plugin → WS Server: `{ type: "result", data: { "url": "https://example.com", "status": "complete" } }`
 5. WS Server → Agent: relays result
 
----
 
 ### US-06: Action fails — agent receives error
 

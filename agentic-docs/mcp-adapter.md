@@ -10,7 +10,6 @@ Gotchas and correct patterns for the `/mcp` package (MCP server that bridges Cla
 | 4 | How to test the MCP adapter in-process without a real browser or relay |
 | 5 | Import paths for the MCP SDK in CommonJS TypeScript |
 
----
 
 ## 1. `TS2589` deep instantiation — use zod v4, not v3
 
@@ -35,7 +34,6 @@ This happens on every `registerTool()` or `tool()` call, regardless of schema co
 
 Import zod the same way (`import { z } from 'zod'`) — no code changes needed.
 
----
 
 ## 2. Prefer `registerTool` over `tool` for tool registration
 
@@ -67,7 +65,6 @@ server.registerTool(
 );
 ```
 
----
 
 ## 3. `callTool()` return type makes `.content` a TypeScript `unknown`
 
@@ -107,7 +104,6 @@ const result = await callTool(mcpClient, { name: 'navigate', arguments: { url: '
 expect(result.content[0].text).toContain('...');  // no TS error
 ```
 
----
 
 ## 4. Image content requires valid base64
 
@@ -137,7 +133,6 @@ mockRelaySocket.send(JSON.stringify({
 
 The assertion `expect(result.content[0].data).toBe(fakeImage)` still works — the SDK passes the data through unchanged.
 
----
 
 ## 5. Testing the MCP adapter in-process
 
@@ -197,7 +192,6 @@ expect(result.content[0].text).toContain('ok');  // verify what the client recei
 
 **Why this order works:** `mockRelayRespond` pre-registers a `socket.once('message')` handler without blocking. `callTool` then fires the WS message, which synchronously triggers the handler (within the same event loop turn), sends the response, and only then the `callTool` promise resolves. By the time `await callTool(...)` returns, `requestSeen` is already resolved.
 
----
 
 ## 6. CommonJS import paths for the MCP SDK
 

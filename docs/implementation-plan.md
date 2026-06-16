@@ -27,7 +27,6 @@
 
 _(none — all questions resolved)_
 
----
 
 ## High-Level Architecture
 
@@ -67,7 +66,6 @@ _(none — all questions resolved)_
 └──────────────────────────────────────────────────────────────┘
 ```
 
----
 
 ## Proposed Components
 
@@ -98,7 +96,6 @@ _(none — all questions resolved)_
 - Handoff / resume message types
 - Connection / heartbeat / reconnect behavior
 
----
 
 ## Implementation Phases
 

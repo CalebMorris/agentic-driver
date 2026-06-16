@@ -13,7 +13,6 @@ Pitfalls and correct patterns for MV3 Chrome extensions with Playwright. Each se
 | 7 | Agent action beats relay state update (control message race) |
 | 8 | Phase-dependent tests interfere or have ordering dependencies |
 
----
 
 ## 1. Use `headless: false` + `--headless=new` to load extensions
 
@@ -38,7 +37,6 @@ browserContext = await chromium.launchPersistentContext(userDataDir, {
 });
 ```
 
----
 
 ## 2. Navigate to a real `http://` URL — scripting APIs refuse `about:blank`
 
@@ -61,7 +59,6 @@ await new Promise<void>((resolve) => testServer.listen(0, 'localhost', () => res
 await page.goto(`http://localhost:${testServerPort}/hello`);
 ```
 
----
 
 ## 3. Wait for relay `'listening'` before launching the browser
 
@@ -79,7 +76,6 @@ await new Promise<void>((resolve) => {
 browserContext = await chromium.launchPersistentContext(userDataDir, { ... });
 ```
 
----
 
 ## 4. Wait for the plugin WS connection, not the service worker event
 
@@ -92,7 +88,6 @@ await relay.waitForPlugin();   // resolves on /plugin WS handshake
 agent = await connectClient('/agent');
 ```
 
----
 
 ## 5. Full `beforeAll` skeleton
 
@@ -124,7 +119,6 @@ test.beforeAll(async ({ }, testInfo) => {
 });
 ```
 
----
 
 ## 6. Calling `background.js` functions from tests via `worker.evaluate()`
 
@@ -150,7 +144,6 @@ await worker.evaluate(
 
 **When to use:** Any time a test needs to trigger driving-state changes without going through the popup UI. See `mv3-background-service-worker.md` § 6 for why the popup is problematic in tests.
 
----
 
 ## 7. Yield to the event loop after sending relay control messages
 
@@ -178,7 +171,6 @@ agentSocket.send(JSON.stringify({ id: '1', type: 'read_html' }));
 
 Apply after every `driving_enabled` / `driving_disabled`, whether sent via mock socket or `worker.evaluate()`.
 
----
 
 ## 8. Use nested `test.describe` for phase-dependent tests
 

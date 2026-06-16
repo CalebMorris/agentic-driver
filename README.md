@@ -3,6 +3,37 @@
 A simple browser plugin that connects to a websocket server to allow 2-way communication with an agent that needs to
 drive a browser with human handoffs.
 
+## Running
+
+Install all dependencies from the repo root:
+
+```sh
+npm install
+```
+
+### Server
+
+```sh
+npm run dev          # development mode (watch + reload)
+npm run build -w server   # compile TypeScript
+npm run test -w server    # unit tests
+npm run install:e2e  # install Playwright's Chromium browser (first time only)
+npm run test:e2e     # end-to-end tests
+```
+
+### MCP Adapter
+
+```sh
+npm run build -w mcp  # compile TypeScript
+npm run test -w mcp   # unit tests
+npm run start -w mcp  # run the compiled MCP server
+```
+
+### Browser Plugin
+
+The plugin (`plugin/`) is plain JavaScript — no build step required. Load it directly into the browser (see Installing in Brave below).
+
+
 ## Installing in Brave
 
 1. Open Brave and navigate to `brave://extensions`

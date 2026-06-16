@@ -13,7 +13,6 @@ Gotchas for `background.js` (MV3 service worker). Each section is self-contained
 | 7 | Post-pin handlers target the wrong tab or capture the wrong screenshot |
 | 8 | Relay acts on stale `drivingEnabled=true` after plugin disconnect |
 
----
 
 ## 1. `waitForTabComplete` — register listener before navigation; no early-complete check
 
@@ -48,7 +47,6 @@ async function handleNavigate(id, message) {
 }
 ```
 
----
 
 ## 2. `executeScript` errors are in the result, not thrown
 
@@ -70,7 +68,6 @@ if (value === null || value === undefined) {
 }
 ```
 
----
 
 ## 3. Relay must be listening before the browser launches
 
@@ -78,13 +75,11 @@ if (value === null || value === undefined) {
 
 See `playwright-chrome-extensions.md` § 3 for the fix pattern.
 
----
 
 ## 4. `currentWindow: true` targets the focused window in Playwright
 
 **Trap:** After `context.newPage()`, the new tab has focus. `chrome.tabs.query({ active: true, currentWindow: true })` returns that new tab. Close pages between tests to avoid stale tab references.
 
----
 
 ## 5. Top-level `var` / `function` required for `worker.evaluate()` access
 
@@ -104,7 +99,6 @@ async function enableDriving() { ... }
 
 See `playwright-chrome-extensions.md` § 6 for the Playwright call pattern.
 
----
 
 ## 6. Popup-as-tab in tests: `active` query returns the popup, not the content page
 
@@ -125,7 +119,6 @@ async function enableDriving() {
 
 **Fix (tests):** Bypass the popup. Navigate the content page first, then call `enableDriving()` via `worker.evaluate()`. See `playwright-chrome-extensions.md` § 6.
 
----
 
 ## 7. Pinned-tab handlers: `get(pinnedTabId)` not re-query; `tab.windowId` for screenshots
 
@@ -164,7 +157,6 @@ async function handleSomeAction(id) {
 }
 ```
 
----
 
 ## 8. Reset relay state on plugin disconnect
 

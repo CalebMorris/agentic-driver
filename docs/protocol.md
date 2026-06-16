@@ -9,7 +9,6 @@ Responses from the plugin always echo back the `id`.
 
 Disconnect detection uses standard WebSocket close events only (no ping-pong heartbeat).
 
----
 
 ## Agent → Plugin (via WS Server)
 
@@ -47,7 +46,6 @@ Or with an optional selector to return only a DOM subtree:
 { "id": "6", "type": "handoff", "reason": "Cloudflare challenge detected" }
 ```
 
----
 
 ## Plugin → Agent (via WS Server)
 
@@ -83,7 +81,6 @@ Action-specific `data` payloads (all sent after execution completes):
 | `DRIVING_DISABLED` | Driving has not been enabled via the plugin UI |
 | `UNKNOWN` | Unexpected error |
 
----
 
 ## Plugin → Relay (control messages)
 
@@ -101,7 +98,6 @@ Sent when the user clicks "Disable Driving," the pinned tab closes, or the plugi
 { "type": "driving_disabled" }
 ```
 
----
 
 ## Plugin → Agent (unsolicited events)
 
