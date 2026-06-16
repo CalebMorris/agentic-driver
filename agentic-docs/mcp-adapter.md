@@ -8,7 +8,9 @@ Gotchas and correct patterns for the `/mcp` package (MCP server that bridges Cla
 | 2 | `callTool()` return type makes `.content` a TypeScript `unknown` |
 | 3 | Test fails with `MCP error -32602: Invalid Base64 string` on image content |
 | 4 | How to test the MCP adapter in-process without a real browser or relay |
-| 5 | Import paths for the MCP SDK in CommonJS TypeScript |
+| 5 | `registerTool` vs `tool` — which to use |
+| 6 | Testing MCP tools that block until a delayed relay response arrives |
+| 7 | Import paths for the MCP SDK in CommonJS TypeScript |
 
 
 ## 1. `TS2589` deep instantiation — use zod v4, not v3
@@ -193,7 +195,51 @@ expect(result.content[0].text).toContain('ok');  // verify what the client recei
 **Why this order works:** `mockRelayRespond` pre-registers a `socket.once('message')` handler without blocking. `callTool` then fires the WS message, which synchronously triggers the handler (within the same event loop turn), sends the response, and only then the `callTool` promise resolves. By the time `await callTool(...)` returns, `requestSeen` is already resolved.
 
 
-## 6. CommonJS import paths for the MCP SDK
+## 6. Testing MCP tools that block until a delayed relay response arrives
+
+**Context:** Some MCP tools (`handoff`) block until the relay synthesizes a response from a later unsolicited plugin event. The relay waits for the plugin to send a completion signal before it responds to the agent — so the relay response is intentionally delayed.
+
+**Trap:** Using `mockRelayRespond()` (which sends a response synchronously within the same `socket.once('message')` handler) doesn't work here — you need the tool call to start, then the mock to respond after a short delay.
+
+**Fix:** Pre-register the mock handler with a `setTimeout` so the response arrives asynchronously after the tool call begins:
+
+```typescript
+it('handoff tool blocks until relay sends complete result', async () => {
+  const requestSeen = new Promise<Record<string, unknown>>((resolve) => {
+    mockRelaySocket.once('message', (data) => {
+      const message = JSON.parse(data.toString()) as Record<string, unknown>;
+      // Simulate relay: delay, then send the synthesized complete result
+      setTimeout(() => {
+        mockRelaySocket.send(JSON.stringify({
+          id: message.id,
+          type: 'result',
+          data: { status: 'complete' },
+        }));
+      }, 20);
+      resolve(message);   // resolve what the relay received (for assertion)
+    });
+  });
+
+  // callTool blocks until the delayed response arrives
+  const toolResult = await callTool(mcpClient, {
+    name: 'handoff',
+    arguments: { reason: 'Cloudflare challenge detected' },
+  });
+
+  const request = await requestSeen; // already resolved by the time callTool returns
+
+  expect(request.type).toBe('handoff');
+  expect(toolResult.isError).toBeFalsy();
+  expect(toolResult.content[0].text).toContain('complete');
+});
+```
+
+**Why `requestSeen` resolves before `toolResult`:** The `once('message')` handler fires and calls `resolve(message)` synchronously when the WS message arrives. `callTool` then waits for the `setTimeout` response to unblock it — so by the time `await callTool(...)` returns, `requestSeen` is already resolved.
+
+**Compare with synchronous mock:** `mockRelayRespond()` (defined in the test file) responds immediately within the `once('message')` handler. Use `mockRelayRespond` for normal tools; use the `setTimeout` pattern only when you need to verify blocking behavior.
+
+
+## 7. CommonJS import paths for the MCP SDK
 
 With `"module": "CommonJS"` in `tsconfig.json`, import the SDK's subpath exports **without** `.js` extensions.
 

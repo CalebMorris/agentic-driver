@@ -1,6 +1,9 @@
 async function render() {
   const statusEl = document.getElementById('status');
   const button = document.getElementById('toggle-btn');
+  const handoffSection = document.getElementById('handoff-section');
+  const handoffReasonEl = document.getElementById('handoff-reason');
+  const doneBtn = document.getElementById('done-btn');
 
   let status;
   try {
@@ -13,6 +16,22 @@ async function render() {
     return;
   }
 
+  if (status.handoffPending) {
+    statusEl.textContent = 'Waiting for you to complete the task:';
+    statusEl.className = '';
+    button.style.display = 'none';
+    handoffSection.style.display = 'block';
+    handoffReasonEl.textContent = status.handoffReason ?? '';
+    doneBtn.onclick = async () => {
+      doneBtn.disabled = true;
+      await chrome.runtime.sendMessage({ type: 'complete_handoff' });
+      await render();
+    };
+    return;
+  }
+
+  button.style.display = '';
+  handoffSection.style.display = 'none';
   button.disabled = false;
 
   if (status.drivingEnabled) {

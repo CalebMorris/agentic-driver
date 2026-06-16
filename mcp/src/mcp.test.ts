@@ -189,6 +189,35 @@ describe('MCP Adapter', () => {
     expect(toolResult.content[0].text).toContain('example.com');
   });
 
+  // ── handoff ───────────────────────────────────────────────────────────────────
+
+  it('handoff tool sends correct WS request and blocks until relay sends complete result', async () => {
+    const requestSeen = new Promise<Record<string, unknown>>((resolve) => {
+      mockRelaySocket.once('message', (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        // Simulate relay behavior: delay, then send synthesized complete result (skipping waiting_for_human)
+        setTimeout(() => {
+          mockRelaySocket.send(JSON.stringify({ id: message.id, type: 'result', data: { status: 'complete' } }));
+        }, 20);
+        resolve(message);
+      });
+    });
+
+    const toolResult = await callTool(mcpClient, {
+      name: 'handoff',
+      arguments: { reason: 'Cloudflare challenge detected' },
+    });
+
+    const request = await requestSeen;
+
+    expect(request.type).toBe('handoff');
+    expect(request.reason).toBe('Cloudflare challenge detected');
+    expect(typeof request.id).toBe('string');
+
+    expect(toolResult.isError).toBeFalsy();
+    expect(toolResult.content[0].text).toContain('complete');
+  });
+
   // ── error handling ────────────────────────────────────────────────────────────
 
   it('relay error response is returned as an MCP error result', async () => {

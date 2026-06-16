@@ -182,4 +182,95 @@ describe('createRelayServer', () => {
     await new Promise<void>((resolve) => socket.once('close', () => resolve()));
     expect(socket.readyState).toBe(WebSocket.CLOSED);
   });
+
+  // ── Handoff ─────────────────────────────────────────────────────────────────
+
+  it('handoff: agent handoff message is forwarded to plugin', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    const message = { id: '7', type: 'handoff', reason: 'Cloudflare challenge detected' };
+    const receivePromise = waitForMessage(pluginSocket);
+    agentSocket.send(JSON.stringify(message));
+
+    const received = await receivePromise;
+    expect(received).toEqual(message);
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
+  it('handoff: waiting_for_human response from plugin is suppressed', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    agentSocket.send(JSON.stringify({ id: '8', type: 'handoff', reason: 'Test' }));
+    await waitForRelayProcess();
+
+    let agentReceivedMessage = false;
+    agentSocket.on('message', () => { agentReceivedMessage = true; });
+
+    pluginSocket.send(JSON.stringify({ id: '8', type: 'result', data: { status: 'waiting_for_human' } }));
+    await waitForRelayProcess();
+
+    expect(agentReceivedMessage).toBe(false);
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
+  it('handoff: handoff_complete causes relay to send complete result to agent with original id', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    agentSocket.send(JSON.stringify({ id: '9', type: 'handoff', reason: 'Test' }));
+    await waitForRelayProcess();
+
+    pluginSocket.send(JSON.stringify({ id: '9', type: 'result', data: { status: 'waiting_for_human' } }));
+    await waitForRelayProcess();
+
+    const receivePromise = waitForMessage(agentSocket);
+    pluginSocket.send(JSON.stringify({ type: 'handoff_complete' }));
+
+    const received = await receivePromise as { id: string; type: string; data: { status: string } };
+    expect(received.id).toBe('9');
+    expect(received.type).toBe('result');
+    expect(received.data.status).toBe('complete');
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
+  it('handoff: plugin disconnect during handoff sends error to agent', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    agentSocket.send(JSON.stringify({ id: '10', type: 'handoff', reason: 'Test' }));
+    await waitForRelayProcess();
+
+    pluginSocket.send(JSON.stringify({ id: '10', type: 'result', data: { status: 'waiting_for_human' } }));
+    await waitForRelayProcess();
+
+    const receivePromise = waitForMessage(agentSocket);
+    await closeClient(pluginSocket);
+
+    const received = await receivePromise as { id: string; type: string; code: string };
+    expect(received.id).toBe('10');
+    expect(received.type).toBe('error');
+    expect(received.code).toBe('UNKNOWN');
+
+    await closeClient(agentSocket);
+  });
 });

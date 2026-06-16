@@ -90,5 +90,14 @@ export function createMcpServer(relayClient: RelayClient): McpServer {
     async () => handleRelayResponse(await relayClient.send({ type: 'view_current_site' }))
   );
 
+  server.registerTool(
+    'handoff',
+    {
+      description: 'Pause agent control and hand off to a human. Blocks until the human signals they are done. Use when encountering Cloudflare challenges, login walls, or other situations requiring human intervention.',
+      inputSchema: { reason: z.string().describe('Reason for the handoff, shown to the human in the plugin UI') },
+    },
+    async ({ reason }) => handleRelayResponse(await relayClient.send({ type: 'handoff', reason }))
+  );
+
   return server;
 }

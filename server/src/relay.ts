@@ -12,6 +12,7 @@ export function createRelayServer(port: number): RelayServer {
   let pluginSocket: WebSocket | null = null;
   let agentSocket: WebSocket | null = null;
   let drivingEnabled = false;
+  let pendingHandoffId: string | null = null;
 
   let resolvePluginConnected: (() => void) | null = null;
   const pluginConnected = new Promise<void>((resolve) => {
@@ -33,7 +34,7 @@ export function createRelayServer(port: number): RelayServer {
       console.log('[relay] Plugin connected');
 
       socket.on('message', (data: Buffer) => {
-        let parsed: { type?: string };
+        let parsed: { type?: string; id?: string };
         try {
           parsed = JSON.parse(data.toString());
         } catch {
@@ -50,6 +51,18 @@ export function createRelayServer(port: number): RelayServer {
           console.log('[relay] Driving disabled');
           return;
         }
+        if (parsed.type === 'handoff_complete') {
+          if (pendingHandoffId !== null) {
+            sendToAgent({ id: pendingHandoffId, type: 'result', data: { status: 'complete' } });
+            pendingHandoffId = null;
+          }
+          return;
+        }
+
+        // Suppress the intermediate waiting_for_human response from the plugin
+        if (pendingHandoffId !== null && parsed.id === pendingHandoffId) {
+          return;
+        }
 
         if (agentSocket?.readyState === WebSocket.OPEN) {
           agentSocket.send(data.toString());
@@ -59,6 +72,15 @@ export function createRelayServer(port: number): RelayServer {
       socket.on('close', () => {
         pluginSocket = null;
         drivingEnabled = false;
+        if (pendingHandoffId !== null) {
+          sendToAgent({
+            id: pendingHandoffId,
+            type: 'error',
+            code: 'UNKNOWN',
+            message: 'Plugin disconnected during handoff',
+          });
+          pendingHandoffId = null;
+        }
         console.log('[relay] Plugin disconnected');
       });
 
@@ -67,7 +89,7 @@ export function createRelayServer(port: number): RelayServer {
       console.log('[relay] Agent connected');
 
       socket.on('message', (data: Buffer) => {
-        let message: { id?: string };
+        let message: { id?: string; type?: string };
         try {
           message = JSON.parse(data.toString());
         } catch {
@@ -82,6 +104,10 @@ export function createRelayServer(port: number): RelayServer {
             message: 'Driving has not been enabled via the plugin UI',
           });
           return;
+        }
+
+        if (message.type === 'handoff') {
+          pendingHandoffId = message.id ?? '';
         }
 
         if (pluginSocket?.readyState === WebSocket.OPEN) {

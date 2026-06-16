@@ -5,6 +5,8 @@ let socket = null;
 // var so these are accessible as service-worker globals (e.g. from worker.evaluate in tests)
 var pinnedTabId = null;
 var drivingEnabled = false;
+var handoffPending = false;
+var handoffReason = null;
 
 function connect() {
   socket = new WebSocket(WS_URL);
@@ -68,6 +70,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         pinnedTabId,
         activeTabId: tab?.id ?? null,
         activeTabUrl: tab?.url ?? null,
+        handoffPending,
+        handoffReason,
       });
     });
     return true; // async response
@@ -78,6 +82,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message.type === 'disable_driving') {
     disableDriving();
+    sendResponse({ success: true });
+  }
+  if (message.type === 'complete_handoff') {
+    handoffPending = false;
+    handoffReason = null;
+    chrome.action.setBadgeText({ text: '' });
+    sendControlMessage({ type: 'handoff_complete' });
     sendResponse({ success: true });
   }
 });
@@ -99,6 +110,7 @@ async function handleMessage(message) {
       case 'click':             return await handleClick(id, message);
       case 'read_html':         return await handleReadHtml(id, message);
       case 'screenshot':        return await handleScreenshot(id);
+      case 'handoff':           return await handleHandoff(id, message);
       default:
         return errorResponse(id, 'UNKNOWN', `Unknown action type: ${type}`);
     }
@@ -228,6 +240,14 @@ async function handleScreenshot(id) {
   } catch (error) {
     return errorResponse(id, 'CAPTURE_FAILED', error.message ?? 'Screenshot failed');
   }
+}
+
+async function handleHandoff(id, message) {
+  handoffPending = true;
+  handoffReason = message.reason ?? null;
+  chrome.action.setBadgeText({ text: '!' });
+  chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+  return { id, type: 'result', data: { status: 'waiting_for_human' } };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

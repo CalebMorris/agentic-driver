@@ -12,6 +12,7 @@ Gotchas for `background.js` (MV3 service worker). Each section is self-contained
 | 6 | `chrome.tabs.query({ active: true })` returns the popup tab in tests |
 | 7 | Post-pin handlers target the wrong tab or capture the wrong screenshot |
 | 8 | Relay acts on stale `drivingEnabled=true` after plugin disconnect |
+| 9 | How to show a badge on the extension icon and clear it |
 
 
 ## 1. `waitForTabComplete` — register listener before navigation; no early-complete check
@@ -171,3 +172,25 @@ socket.on('close', () => {
   console.log('[relay] Plugin disconnected');
 });
 ```
+
+See `relay-server.md` § 5–6 for the extended pattern when there are pending in-flight requests (e.g., handoff) that also need to be unblocked on disconnect.
+
+
+## 9. How to show a badge on the extension icon and clear it
+
+Use `chrome.action.setBadgeText` / `setBadgeBackgroundColor` to show a visible indicator on the toolbar icon. This is the correct way to signal to the user that attention is needed without requiring the popup to be open.
+
+```javascript
+// Show a badge — call from background.js (e.g., on handoff)
+chrome.action.setBadgeText({ text: '!' });
+chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' }); // amber
+
+// Clear the badge — call when the condition resolves
+chrome.action.setBadgeText({ text: '' }); // empty string removes the badge
+```
+
+**Notes:**
+- `text` must be a string; `null` does not clear the badge in MV3 — use `''`.
+- `color` can be a hex string or an `[R, G, B, A]` array.
+- Neither call requires `await` — they are fire-and-forget.
+- Both calls are on `chrome.action`, not `chrome.browserAction` (MV2 — do not use).

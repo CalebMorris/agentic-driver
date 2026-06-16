@@ -36,13 +36,28 @@
       color: #fff;
     }
     .danger:hover { background: #dc2626; }
+    .warning {
+      background: #f59e0b;
+      color: #fff;
+    }
+    .warning:hover { background: #d97706; }
     .muted { color: #888; font-style: italic; }
+    #handoff-section { display: none; }
+    #handoff-reason {
+      margin: 0 0 12px;
+      color: #555;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
   <h1>Agentic Driver</h1>
   <p id="status" class="muted">Loading&hellip;</p>
   <button id="toggle-btn" disabled>Loading&hellip;</button>
+  <div id="handoff-section">
+    <p id="handoff-reason"></p>
+    <button id="done-btn" class="warning">Done</button>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

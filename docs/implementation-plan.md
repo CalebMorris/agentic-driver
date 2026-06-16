@@ -136,9 +136,9 @@ Before any agent action can execute, two preconditions must be satisfied:
 - [x] End-to-end test: MCP client → relay → mock plugin → result verified (7 tests pass)
 
 ### Phase 4 — Human Handoff
-- [ ] Implement `handoff` / `handoff_complete` message types in server + plugin
-- [ ] Build plugin UI for handoff notification and resume signal (popup.html exists as placeholder only)
-- [ ] Test full handoff round-trip
+- [x] Implement `handoff` / `handoff_complete` message types in server + plugin
+- [x] Build plugin UI for handoff notification and resume signal (popup.html exists as placeholder only)
+- [x] Test full handoff round-trip
 
 ### Phase 5 — Hardening
 - [ ] Error handling for failed actions
