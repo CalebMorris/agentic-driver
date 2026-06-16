@@ -26,6 +26,14 @@ export class RelayClient {
           resolver(response);
         }
       });
+
+      this.socket.on('close', () => {
+        this.socket = null;
+        for (const [requestId, resolver] of this.pendingRequests) {
+          resolver({ id: requestId, type: 'error', code: 'RELAY_DISCONNECTED', message: 'Relay connection closed' });
+        }
+        this.pendingRequests.clear();
+      });
     });
   }
 

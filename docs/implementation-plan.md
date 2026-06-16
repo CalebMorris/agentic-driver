@@ -141,7 +141,7 @@ Before any agent action can execute, two preconditions must be satisfied:
 - [x] Test full handoff round-trip
 
 ### Phase 5 — Hardening
-- [ ] Error handling for failed actions
-- [ ] Reconnection logic (agent or plugin disconnects)
-- [ ] Auth model (if required)
-- [ ] Tab lifecycle management (if in scope)
+- [x] Error handling for failed actions (`executeScript` call-level try/catch in `handleClick` and `handleReadHtml`)
+- [x] Reconnection logic: `background.js` exponential backoff reconnect (1s→30s cap); `RelayClient` rejects pending requests on disconnect with `RELAY_DISCONNECTED` error
+- [x] Auth model — not required (decision: local-only, no auth token)
+- [x] Tab lifecycle management — `tabs.onRemoved` clears the pinned tab on close (in scope for v1)

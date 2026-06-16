@@ -1,6 +1,9 @@
 const WS_URL = 'ws://localhost:9999/plugin';
+const RECONNECT_BASE_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 30_000;
 
 let socket = null;
+var reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
 
 // var so these are accessible as service-worker globals (e.g. from worker.evaluate in tests)
 var pinnedTabId = null;
@@ -13,6 +16,7 @@ function connect() {
 
   socket.addEventListener('open', () => {
     console.log('[agentic-driver] Connected to relay server');
+    reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
   });
 
   socket.addEventListener('message', async (event) => {
@@ -33,11 +37,20 @@ function connect() {
   socket.addEventListener('close', () => {
     console.log('[agentic-driver] Disconnected from relay server');
     socket = null;
+    scheduleReconnect();
   });
 
   socket.addEventListener('error', (error) => {
     console.error('[agentic-driver] WebSocket error:', error);
+    // close event fires after error and triggers reconnect
   });
+}
+
+function scheduleReconnect() {
+  const delay = reconnectDelayMs;
+  reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
+  console.log(`[agentic-driver] Reconnecting in ${delay}ms`);
+  setTimeout(connect, delay);
 }
 
 function sendControlMessage(payload) {
@@ -178,18 +191,23 @@ async function handleClick(id, message) {
     return errorResponse(id, 'UNKNOWN', 'No tab is pinned for driving');
   }
 
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: (cssSelector) => {
-      const element = document.querySelector(cssSelector);
-      if (!element) return false;
-      element.click();
-      return true;
-    },
-    args: [selector],
-  });
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (cssSelector) => {
+        const element = document.querySelector(cssSelector);
+        if (!element) return false;
+        element.click();
+        return true;
+      },
+      args: [selector],
+    });
+  } catch (error) {
+    return errorResponse(id, 'UNKNOWN', error.message ?? 'Script execution failed');
+  }
 
-  if (!result?.result) {
+  if (!results?.[0]?.result) {
     return errorResponse(id, 'ELEMENT_NOT_FOUND', `No element matches selector '${selector}'`);
   }
 
@@ -202,19 +220,24 @@ async function handleReadHtml(id, message) {
     return errorResponse(id, 'UNKNOWN', 'No tab is pinned for driving');
   }
 
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: (selector) => {
-      if (selector) {
-        const element = document.querySelector(selector);
-        return element ? element.outerHTML : null;
-      }
-      return document.documentElement.outerHTML;
-    },
-    args: [message.selector ?? null],
-  });
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (selector) => {
+        if (selector) {
+          const element = document.querySelector(selector);
+          return element ? element.outerHTML : null;
+        }
+        return document.documentElement.outerHTML;
+      },
+      args: [message.selector ?? null],
+    });
+  } catch (error) {
+    return errorResponse(id, 'UNKNOWN', error.message ?? 'Script execution failed');
+  }
 
-  const html = result?.result;
+  const html = results?.[0]?.result;
 
   if (html === null || html === undefined) {
     return errorResponse(
