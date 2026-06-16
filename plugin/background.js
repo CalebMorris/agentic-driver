@@ -209,24 +209,15 @@ async function handleClick(id, message) {
     return errorResponse(id, 'UNKNOWN', 'No tab is pinned for driving');
   }
 
-  let results;
+  let result;
   try {
-    results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (cssSelector) => {
-        const element = document.querySelector(cssSelector);
-        if (!element) return false;
-        element.click();
-        return true;
-      },
-      args: [selector],
-    });
+    result = await chrome.tabs.sendMessage(tab.id, { type: 'click', selector });
   } catch (error) {
-    return errorResponse(id, 'UNKNOWN', error.message ?? 'Script execution failed');
+    return errorResponse(id, 'UNKNOWN', error.message ?? 'Message delivery failed');
   }
 
-  if (!results?.[0]?.result) {
-    return errorResponse(id, 'ELEMENT_NOT_FOUND', `No element matches selector '${selector}'`);
+  if (!result?.success) {
+    return errorResponse(id, result?.errorCode ?? 'UNKNOWN', result?.errorMessage ?? 'Click failed');
   }
 
   return { id, type: 'result', data: { status: 'ok' } };
@@ -238,34 +229,18 @@ async function handleReadHtml(id, message) {
     return errorResponse(id, 'UNKNOWN', 'No tab is pinned for driving');
   }
 
-  let results;
+  let result;
   try {
-    results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: (selector) => {
-        if (selector) {
-          const element = document.querySelector(selector);
-          return element ? element.outerHTML : null;
-        }
-        return document.documentElement.outerHTML;
-      },
-      args: [message.selector ?? null],
-    });
+    result = await chrome.tabs.sendMessage(tab.id, { type: 'read_html', selector: message.selector ?? null });
   } catch (error) {
-    return errorResponse(id, 'UNKNOWN', error.message ?? 'Script execution failed');
+    return errorResponse(id, 'UNKNOWN', error.message ?? 'Message delivery failed');
   }
 
-  const html = results?.[0]?.result;
-
-  if (html === null || html === undefined) {
-    return errorResponse(
-      id,
-      'ELEMENT_NOT_FOUND',
-      `No element matches selector '${message.selector}'`
-    );
+  if (!result?.success) {
+    return errorResponse(id, result?.errorCode ?? 'UNKNOWN', result?.errorMessage ?? 'Read HTML failed');
   }
 
-  return { id, type: 'result', data: { html } };
+  return { id, type: 'result', data: { html: result.html } };
 }
 
 async function handleScreenshot(id) {

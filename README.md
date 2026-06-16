@@ -34,6 +34,18 @@ npm run start -w mcp  # run the compiled MCP server
 The plugin (`plugin/`) is plain JavaScript — no build step required. Load it directly into the browser (see Installing in Brave below).
 
 
+## Registering the MCP Adapter with Claude CLI
+
+Build the MCP adapter and register it as a local MCP server so Claude CLI can use it:
+
+```sh
+npm run build -w mcp
+npm run install:mcp
+```
+
+The `install:mcp` script registers the compiled adapter with `claude mcp add`. After registering, Claude CLI will have access to the browser control tools (`navigate`, `click`, `read_html`, `screenshot`, `view_current_site`, `handoff`) whenever the relay server is running.
+
+
 ## Installing in Brave
 
 1. Open Brave and navigate to `brave://extensions`
