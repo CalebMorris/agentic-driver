@@ -1,24 +1,25 @@
 # MV3 Background Service Worker — Pitfalls
 
-Patterns and gotchas specific to the Agentic Driver's `background.js` (MV3 service worker).
+Gotchas for `background.js` (MV3 service worker). Each section is self-contained.
+
+| § | Symptom |
+|---|---------|
+| 1 | `navigate` returns immediately with the pre-navigation URL |
+| 2 | `executeScript` result is `undefined` but no exception is thrown |
+| 3 | Plugin never connects to relay after browser launch |
+| 4 | Wrong tab is targeted in multi-tab Playwright tests |
+| 5 | `worker.evaluate()` cannot see top-level variables or arrow functions |
+| 6 | `chrome.tabs.query({ active: true })` returns the popup tab in tests |
+| 7 | Post-pin handlers target the wrong tab or capture the wrong screenshot |
+| 8 | Relay acts on stale `drivingEnabled=true` after plugin disconnect |
 
 ---
 
-## 1. `waitForTabComplete` — never check "already complete" before navigation
+## 1. `waitForTabComplete` — register listener before navigation; no early-complete check
 
-**The trap:** A common pattern is to register `chrome.tabs.onUpdated` and then immediately check if the tab is already `'complete'` as a shortcut for fast/cached loads:
+**Trap:** `tab.status === 'complete'` is always true before navigation starts. Checking it as a shortcut resolves the promise before `tabs.update` fires, returning the pre-navigation URL.
 
-```javascript
-// BROKEN — do not do this
-chrome.tabs.onUpdated.addListener(onUpdated);
-chrome.tabs.get(tabId).then((tab) => {
-  if (tab.status === 'complete') resolve(); // fires immediately — BEFORE navigation starts
-});
-```
-
-Every tab is in `status: 'complete'` before navigation begins. This check always fires, resolving the promise before `chrome.tabs.update` is even called. The result: `navigate` returns immediately with the **pre-navigation URL** (e.g. `about:blank`), not the destination.
-
-**Fix:** Do not check for early-complete. Register the listener before calling `tabs.update` — that is sufficient to avoid missing the event:
+**Fix:** Register the listener before `tabs.update`. No early-complete check needed.
 
 ```javascript
 function waitForTabComplete(tabId) {
@@ -36,37 +37,30 @@ function waitForTabComplete(tabId) {
       }
     }
 
-    // Register BEFORE tabs.update — cannot miss the event this way.
-    // No early-complete check: the tab is always 'complete' before navigation.
-    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onUpdated.addListener(onUpdated); // register BEFORE tabs.update
   });
 }
 
-// Correct call site
 async function handleNavigate(id, message) {
-  const loadComplete = waitForTabComplete(tab.id);  // listener registered first
+  const loadComplete = waitForTabComplete(tab.id);
   await chrome.tabs.update(tab.id, { url: message.url });
-  await loadComplete;                                // now wait for real completion
-  // ...
+  await loadComplete;
 }
 ```
 
 ---
 
-## 2. `chrome.scripting.executeScript` returns errors, not throws, on script failures
+## 2. `executeScript` errors are in the result, not thrown
 
-**What happens:** When the injected function throws inside `executeScript`, the result's `result` property is `undefined` and `chrome.runtime.lastError` is set — the outer `await` does NOT throw. Code that checks `result?.result` for null/false will incorrectly return `ELEMENT_NOT_FOUND` when the real error is something else (e.g. the tab URL is `about:blank`).
+**Trap:** When the injected function throws, `await executeScript(...)` does NOT throw. `results[0].result` is `undefined` and `chrome.runtime.lastError` is set. Treating `undefined` as `ELEMENT_NOT_FOUND` masks the real error.
 
-**Symptom:** Getting `ELEMENT_NOT_FOUND` even when the element exists (or `UNKNOWN` when it should be `ELEMENT_NOT_FOUND`).
-
-**Pattern to follow:** Wrap `executeScript` in try/catch AND validate the result distinctly:
+**Fix:** Try/catch for call-level errors (bad URL, permissions); check result separately for script-level failures.
 
 ```javascript
 let results;
 try {
   results = await chrome.scripting.executeScript({ target: { tabId }, func, args });
 } catch (error) {
-  // Tab URL not scriptable (about:blank, chrome://, etc.) or permission error
   return errorResponse(id, 'UNKNOWN', error.message);
 }
 
@@ -78,16 +72,110 @@ if (value === null || value === undefined) {
 
 ---
 
-## 3. Service worker WS connection is fire-and-forget on startup
+## 3. Relay must be listening before the browser launches
 
-`connect()` in `background.js` is called at module load. If the relay server is not yet listening, the WebSocket `error` event fires and the connection is silently dropped. The service worker continues to run (it does not crash), but the plugin is never connected to the relay.
+**Trap:** `new WebSocketServer({ port })` is async. The extension may try to connect before the server is ready, fail silently, and never link.
 
-**Implication for tests:** Always start the relay server and confirm it is listening before launching the browser. See `playwright-chrome-extensions.md` § 3.
-
-**Implication for production:** Phase 5 reconnection logic should retry `connect()` on `socket.addEventListener('close', ...)` with exponential backoff so transient relay restarts recover automatically.
+See `playwright-chrome-extensions.md` § 3 for the fix pattern.
 
 ---
 
-## 4. `chrome.tabs.query({ active: true, currentWindow: true })` in tests
+## 4. `currentWindow: true` targets the focused window in Playwright
 
-When multiple tabs are open in the Playwright persistent context, `currentWindow: true` refers to the window that has focus. After `context.newPage()`, the new tab is focused and active — this is the tab the plugin will operate on. Close pages between tests to avoid stale tab references.
+**Trap:** After `context.newPage()`, the new tab has focus. `chrome.tabs.query({ active: true, currentWindow: true })` returns that new tab. Close pages between tests to avoid stale tab references.
+
+---
+
+## 5. Top-level `var` / `function` required for `worker.evaluate()` access
+
+**Trap:** `let`/`const` and arrow functions at the top level of a service worker are NOT properties of `self`. `worker.evaluate()` only sees `self` properties.
+
+```javascript
+// INACCESSIBLE via worker.evaluate()
+let pinnedTabId = null;
+const enableDriving = async () => { ... };
+
+// ACCESSIBLE via worker.evaluate()
+var pinnedTabId = null;
+async function enableDriving() { ... }
+```
+
+**Fix:** Use `var` for any state and named `function` declarations for any function that tests must reach via `worker.evaluate()`.
+
+See `playwright-chrome-extensions.md` § 6 for the Playwright call pattern.
+
+---
+
+## 6. Popup-as-tab in tests: `active` query returns the popup, not the content page
+
+**Trap:** In real Chrome, the popup is an overlay and does not change the active tab. In Playwright, navigating to `popup.html` makes it a real tab. `chrome.tabs.query({ active: true })` from background returns the popup's tab ID, not the content page.
+
+**Fix (background.js):** Keep the `tabs.query` inside background. The popup sends only `{ type: 'enable_driving' }`; background resolves the correct tab itself.
+
+```javascript
+async function enableDriving() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id) {
+    pinnedTabId = tab.id;
+    drivingEnabled = true;
+    sendControlMessage({ type: 'driving_enabled', tabId: tab.id });
+  }
+}
+```
+
+**Fix (tests):** Bypass the popup. Navigate the content page first, then call `enableDriving()` via `worker.evaluate()`. See `playwright-chrome-extensions.md` § 6.
+
+---
+
+## 7. Pinned-tab handlers: `get(pinnedTabId)` not re-query; `tab.windowId` for screenshots
+
+**Trap A — Stale URL after navigate:** Re-querying the active tab returns whatever tab is active now.
+
+```javascript
+// WRONG
+const [updatedTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+// CORRECT
+const updatedTab = await chrome.tabs.get(pinnedTabId);
+```
+
+**Trap B — Wrong screenshot:** `captureVisibleTab(null, ...)` captures the last-focused window, not the pinned tab's window.
+
+```javascript
+// WRONG
+await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+// CORRECT
+const tab = await chrome.tabs.get(pinnedTabId);
+await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+```
+
+**Pattern:** `getPinnedTab()` returns `null` when nothing is pinned; every handler bails early on `null`.
+
+```javascript
+async function getPinnedTab() {
+  if (!pinnedTabId) return null;
+  try { return await chrome.tabs.get(pinnedTabId); }
+  catch { return null; }
+}
+
+async function handleSomeAction(id) {
+  const tab = await getPinnedTab();
+  if (!tab) return errorResponse(id, 'UNKNOWN', 'No tab is pinned for driving');
+  // use tab.id, tab.windowId, etc.
+}
+```
+
+---
+
+## 8. Reset relay state on plugin disconnect
+
+**Trap:** Plugin disconnects (crash/reload/drop) with `drivingEnabled = true` on the relay. Subsequent agent actions route to a non-existent socket.
+
+**Fix:** Reset in the plugin socket's `close` handler.
+
+```typescript
+socket.on('close', () => {
+  pluginSocket = null;
+  drivingEnabled = false;
+  console.log('[relay] Plugin disconnected');
+});
+```
