@@ -132,11 +132,11 @@ Before any agent action can execute, two preconditions must be satisfied:
 - [x] End-to-end tests: `navigate`, `click`, `read_html`, `screenshot`, unknown action type
 
 ### Phase 3 — MCP Adapter (primary Claude CLI connection method)
-- [ ] Build MCP server that connects to relay as the agent (`ws://localhost:9999/agent`)
-- [ ] Expose each action type as an MCP tool with typed input/output schemas
-- [ ] Translate MCP tool calls → WS requests; WS responses → MCP tool results
+- [x] Build MCP server that connects to relay as the agent (`ws://localhost:9999/agent`)
+- [x] Expose each action type as an MCP tool with typed input/output schemas
+- [x] Translate MCP tool calls → WS requests; WS responses → MCP tool results
 - [ ] Register with Claude CLI via `claude mcp add`
-- [ ] End-to-end test: Claude issues tool call → plugin executes → result returned
+- [x] End-to-end test: MCP client → relay → mock plugin → result verified (7 tests pass)
 
 ### Phase 4 — Human Handoff
 - [ ] Implement `handoff` / `handoff_complete` message types in server + plugin
