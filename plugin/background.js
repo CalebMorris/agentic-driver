@@ -12,17 +12,19 @@ var handoffPending = false;
 var handoffReason = null;
 
 function connect() {
-  socket = new WebSocket(WS_URL);
+  const ws = new WebSocket(WS_URL);
+  socket = ws;
 
-  socket.addEventListener('open', () => {
+  ws.addEventListener('open', () => {
+    if (socket !== ws) return;
     console.log('[agentic-driver] Connected to relay server');
     reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
     if (drivingEnabled && pinnedTabId !== null) {
-      socket.send(JSON.stringify({ type: 'driving_enabled', tabId: pinnedTabId }));
+      ws.send(JSON.stringify({ type: 'driving_enabled', tabId: pinnedTabId }));
     }
   });
 
-  socket.addEventListener('message', async (event) => {
+  ws.addEventListener('message', async (event) => {
     let message;
     try {
       message = JSON.parse(event.data);
@@ -32,18 +34,19 @@ function connect() {
     }
 
     const response = await handleMessage(message);
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(response));
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(response));
     }
   });
 
-  socket.addEventListener('close', () => {
+  ws.addEventListener('close', () => {
+    if (socket !== ws) return;
     console.log('[agentic-driver] Disconnected from relay server');
     socket = null;
     scheduleReconnect();
   });
 
-  socket.addEventListener('error', (error) => {
+  ws.addEventListener('error', (error) => {
     console.error('[agentic-driver] WebSocket error:', error);
     // close event fires after error and triggers reconnect
   });
