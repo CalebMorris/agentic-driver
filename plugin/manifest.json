@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agentic Driver",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Connects to a local WebSocket server to allow AI agents to drive the browser.",
   "permissions": [
     "activeTab",
