@@ -1,7 +1,8 @@
 # Agentic Driver
 
-A simple browser plugin that connects to a websocket server to allow 2-way communication with an agent that needs to
-drive a browser with human handoffs.
+Your agent hits a Cloudflare wall. Agentic Driver lets you step in, solve it, and hand control back — no workflow restart, no hacks.
+
+It's a Chrome/Brave extension paired with a WebSocket relay and an MCP adapter. Claude gets real browser tools (`navigate`, `click`, `read_html`, `screenshot`). When the agent needs a human — bot detection, 2FA, anything requiring judgment — it calls `handoff`, you take the wheel, and it resumes exactly where it left off.
 
 ## Running
 
@@ -55,7 +56,3 @@ The `install:mcp` script registers the compiled adapter with `claude mcp add`. A
 5. The Agentic Driver extension will appear in your extensions list — pin it to the toolbar for easy access
 
 > The extension uses Manifest V3, which is supported in Brave 1.19+.
-
-## Example Use Case
-
-I want my agent to investigate and research a topic, but some of the websites present have hard Cloudflare blocks on them. I want the agent to hand off the driving to me with a ping, have me complete the Cloudflare solution, and pass back driver control to the agent.
