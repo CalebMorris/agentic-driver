@@ -17,6 +17,9 @@ function connect() {
   socket.addEventListener('open', () => {
     console.log('[agentic-driver] Connected to relay server');
     reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
+    if (drivingEnabled && pinnedTabId !== null) {
+      socket.send(JSON.stringify({ type: 'driving_enabled', tabId: pinnedTabId }));
+    }
   });
 
   socket.addEventListener('message', async (event) => {
@@ -47,6 +50,7 @@ function connect() {
 }
 
 function scheduleReconnect() {
+  if (!drivingEnabled) return;
   const delay = reconnectDelayMs;
   reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
   console.log(`[agentic-driver] Reconnecting in ${delay}ms`);
@@ -81,7 +85,11 @@ async function enableDriving() {
     pinnedTabId = tab.id;
     drivingEnabled = true;
     updateActionIcon(true);
-    sendControlMessage({ type: 'driving_enabled', tabId: tab.id });
+    reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
+    if (!socket) {
+      connect();
+    }
+    // driving_enabled is sent in the socket's open handler once connected
   }
 }
 
@@ -90,6 +98,10 @@ function disableDriving() {
   drivingEnabled = false;
   updateActionIcon(false);
   sendControlMessage({ type: 'driving_disabled' });
+  if (socket) {
+    socket.close();
+    socket = null;
+  }
 }
 
 // Handle messages from the popup
@@ -294,4 +306,3 @@ function errorResponse(id, code, message) {
 }
 
 updateActionIcon(false);
-connect();

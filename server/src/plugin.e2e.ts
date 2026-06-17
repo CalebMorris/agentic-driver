@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { AddressInfo } from 'net';
-import { createRelayServer } from './relay';
+import { createRelayServer, RelayServer } from './relay';
 
 const PLUGIN_PATH = path.resolve(__dirname, '../../plugin');
 const SERVER_PORT = 9999;
@@ -44,6 +44,7 @@ async function disableDrivingOnWorker(worker: Worker): Promise<void> {
 }
 
 test.describe('Plugin E2E', () => {
+  let relay: RelayServer;
   let relayWss: WebSocketServer;
   let browserContext: BrowserContext;
   let agent: WsClient;
@@ -55,7 +56,7 @@ test.describe('Plugin E2E', () => {
     testInfo.setTimeout(60_000);
 
     // Start relay and wait until it is actually listening before launching the browser
-    const relay = createRelayServer(SERVER_PORT);
+    relay = createRelayServer(SERVER_PORT);
     relayWss = relay.wss;
     await new Promise<void>((resolve) => {
       if (relayWss.address()) resolve();
@@ -77,10 +78,7 @@ test.describe('Plugin E2E', () => {
       ],
     });
 
-    // Wait for the plugin's service worker to connect to the relay
-    await relay.waitForPlugin();
-
-    // Connect the test agent
+    // Connect the test agent — the plugin only connects to the relay once driving is enabled
     agent = await connectClient('/agent');
 
     // Local HTTP server with path-based content so every test page is on a
@@ -111,6 +109,46 @@ test.describe('Plugin E2E', () => {
     await new Promise<void>((resolve) => relayWss.close(() => resolve()));
     await new Promise<void>((resolve) => testServer.close(() => resolve()));
     fs.rmSync(userDataDir, { recursive: true, force: true });
+  });
+
+  // ── Plugin Connection Gate ────────────────────────────────────────────────
+  // Verify the plugin does not open a relay WebSocket until driving is enabled.
+
+  test('plugin is not connected to relay before driving is enabled', async () => {
+    await waitForRelayProcess();
+    expect(relay.isPluginConnected()).toBe(false);
+  });
+
+  test('plugin connects to relay when driving is enabled', async () => {
+    const [worker] = browserContext.serviceWorkers();
+    const page = await browserContext.newPage();
+    await page.goto(`http://localhost:${testServerPort}/`);
+
+    const pluginConnected = relay.waitForPluginConnect();
+    await enableDrivingOnWorker(worker);
+    await pluginConnected;
+
+    expect(relay.isPluginConnected()).toBe(true);
+
+    await disableDrivingOnWorker(worker);
+    await page.close();
+  });
+
+  test('plugin disconnects from relay when driving is disabled', async () => {
+    const [worker] = browserContext.serviceWorkers();
+    const page = await browserContext.newPage();
+    await page.goto(`http://localhost:${testServerPort}/`);
+
+    await enableDrivingOnWorker(worker);
+    await relay.waitForPluginConnect();
+
+    const pluginDisconnected = relay.waitForPluginDisconnect();
+    await disableDrivingOnWorker(worker);
+    await pluginDisconnected;
+
+    expect(relay.isPluginConnected()).toBe(false);
+
+    await page.close();
   });
 
   // ── Phase 0: Driving Gate ─────────────────────────────────────────────────

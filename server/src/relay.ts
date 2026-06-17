@@ -3,7 +3,14 @@ import { IncomingMessage } from 'http';
 
 export interface RelayServer {
   wss: WebSocketServer;
+  /** Resolves when the plugin is connected (immediately if already connected). */
   waitForPlugin: () => Promise<void>;
+  /** Returns true if the plugin WebSocket is currently open. */
+  isPluginConnected: () => boolean;
+  /** Resolves on the next plugin connection (immediately if already connected). */
+  waitForPluginConnect: () => Promise<void>;
+  /** Resolves on the next plugin disconnection (immediately if not connected). */
+  waitForPluginDisconnect: () => Promise<void>;
 }
 
 export function createRelayServer(port: number): RelayServer {
@@ -14,10 +21,26 @@ export function createRelayServer(port: number): RelayServer {
   let drivingEnabled = false;
   let pendingHandoffId: string | null = null;
 
-  let resolvePluginConnected: (() => void) | null = null;
-  const pluginConnected = new Promise<void>((resolve) => {
-    resolvePluginConnected = resolve;
-  });
+  const pluginConnectWaiters: Array<() => void> = [];
+  const pluginDisconnectWaiters: Array<() => void> = [];
+
+  function isPluginConnected(): boolean {
+    return pluginSocket !== null && pluginSocket.readyState === WebSocket.OPEN;
+  }
+
+  function waitForPluginConnect(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (isPluginConnected()) { resolve(); return; }
+      pluginConnectWaiters.push(resolve);
+    });
+  }
+
+  function waitForPluginDisconnect(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (!isPluginConnected()) { resolve(); return; }
+      pluginDisconnectWaiters.push(resolve);
+    });
+  }
 
   function sendToAgent(payload: object): void {
     if (agentSocket?.readyState === WebSocket.OPEN) {
@@ -30,7 +53,7 @@ export function createRelayServer(port: number): RelayServer {
 
     if (clientPath === '/plugin') {
       pluginSocket = socket;
-      resolvePluginConnected?.();
+      pluginConnectWaiters.splice(0).forEach(fn => fn());
       console.log('[relay] Plugin connected');
 
       socket.on('message', (data: Buffer) => {
@@ -72,6 +95,7 @@ export function createRelayServer(port: number): RelayServer {
       socket.on('close', () => {
         pluginSocket = null;
         drivingEnabled = false;
+        pluginDisconnectWaiters.splice(0).forEach(fn => fn());
         if (pendingHandoffId !== null) {
           sendToAgent({
             id: pendingHandoffId,
@@ -132,5 +156,5 @@ export function createRelayServer(port: number): RelayServer {
     }
   });
 
-  return { wss, waitForPlugin: () => pluginConnected };
+  return { wss, waitForPlugin: waitForPluginConnect, isPluginConnected, waitForPluginConnect, waitForPluginDisconnect };
 }
