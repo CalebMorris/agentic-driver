@@ -10,7 +10,9 @@ Gotchas and correct patterns for the `/mcp` package (MCP server that bridges Cla
 | 4 | How to test the MCP adapter in-process without a real browser or relay |
 | 5 | `registerTool` vs `tool` — which to use |
 | 6 | Testing MCP tools that block until a delayed relay response arrives |
-| 7 | Import paths for the MCP SDK in CommonJS TypeScript |
+| 7 | SDK subpath imports crash the process at startup — postinstall patch required |
+| 8 | Diagnosing MCP connection failures: `-32000` vs timeout vs working |
+| 9 | Relay connection must be non-blocking — connect stdio first, relay in background |
 
 
 ## 1. `TS2589` deep instantiation — use zod v4, not v3
@@ -239,16 +241,88 @@ it('handoff tool blocks until relay sends complete result', async () => {
 **Compare with synchronous mock:** `mockRelayRespond()` (defined in the test file) responds immediately within the `once('message')` handler. Use `mockRelayRespond` for normal tools; use the `setTimeout` pattern only when you need to verify blocking behavior.
 
 
-## 7. CommonJS import paths for the MCP SDK
+## 7. SDK subpath imports require a postinstall patch
 
-With `"module": "CommonJS"` in `tsconfig.json`, import the SDK's subpath exports **without** `.js` extensions.
+**Trap:** The SDK's `package.json` wildcard export maps `"./*"` to `"require": "./dist/cjs/*"` (no `.js` in the target). Node.js does **not** apply CJS extension resolution (`.js` fallback) for wildcard-pattern export paths — the resolved path must be an exact file match. So `require("@modelcontextprotocol/sdk/server/stdio")` resolves to `./dist/cjs/server/stdio`, which doesn't exist (only `stdio.js` does), and the process crashes before any code runs.
+
+**Fix:** `scripts/patch-mcp-sdk.js` (run via `postinstall`) rewrites the wildcard target to `"./dist/cjs/*.js"`. This makes `require("@modelcontextprotocol/sdk/server/stdio")` resolve to `./dist/cjs/server/stdio.js` — an exact match.
+
+Import subpath exports without `.js` in source code — the patch makes that work at runtime:
 
 ```typescript
-// CORRECT (CommonJS)
+// CORRECT — no .js needed in source; patch-mcp-sdk.js ensures exact runtime resolution
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio';
 import { Client } from '@modelcontextprotocol/sdk/client/index';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory';
 ```
 
-The `.js` extension form (`'.../server/mcp.js'`) is for ESM. The SDK ships CJS builds at `dist/cjs/` which are resolved automatically by Node's CommonJS resolver.
+If the MCP fails to start with "Cannot find module" after `npm install`, the patch didn't run. Re-run it manually: `node scripts/patch-mcp-sdk.js`.
+
+**Why `tsc` and Vitest don't catch this:** TypeScript resolves types via the SDK's `typesVersions` field (not the `exports` field), so `tsc` compiles successfully regardless. Vitest uses Vite's bundler-style module resolver, which applies extension resolution even for package exports wildcards — so tests pass too. The bug only surfaces when Node.js loads the compiled CJS dist directly, which is exactly what Claude Code does when spawning the MCP process.
+
+
+## 8. Diagnosing MCP connection failures
+
+When `/mcp` fails, the error message tells you which layer broke:
+
+| Error | Meaning | Where to look |
+|---|---|---|
+| `Failed to reconnect … -32000` | Process crashed before the MCP handshake (require-time crash) | `/tmp/agentic-driver-mcp.log` doesn't exist; check module resolution |
+| `connection timed out after 30000ms` | Process started but handshake didn't complete in 30 s | Log exists; check what step it's stuck on |
+| `Reconnected to agentic-driver` | Success | — |
+
+**Check the log first:**
+
+```
+cat /tmp/agentic-driver-mcp.log
+```
+
+The log is written by `index.ts` at each startup step. Mapping log output to root causes:
+
+| Last log line | Root cause |
+|---|---|
+| *(file doesn't exist)* | `require()` crashed before any code ran — module resolution failure (see § 7) |
+| `Connecting to relay...` (no further lines, timeout) | Relay connection is blocking stdio startup — see § 9 |
+| `MCP server ready` | MCP is running; connection failure is on Claude Code's side |
+
+**After any code change, always delete the old log before reconnecting** so you're reading fresh output:
+
+```bash
+rm -f /tmp/agentic-driver-mcp.log
+# then run /mcp
+cat /tmp/agentic-driver-mcp.log
+```
+
+
+## 9. Relay connection must be non-blocking — connect stdio first
+
+**Trap:** If `index.ts` awaits `relayClient.connect()` before calling `server.connect(transport)`, Claude Code times out. The MCP handshake (initialize request/response on stdio) can't happen until the server is connected to the transport. The relay can take many seconds to be available — `ts-node-dev` compiles on startup, the user may not have run `npm run dev` yet, or the relay may be restarting. Claude Code's timeout is 30 seconds.
+
+```
+// WRONG — relay blocks stdio; Claude Code times out waiting for MCP handshake
+await relayClient.connect();          // can take 30–60 s
+await server.connect(transport);      // too late; Claude Code gave up
+```
+
+**Fix:** Connect to stdio first, relay in background.
+
+```typescript
+// CORRECT — stdio handshake completes immediately; relay connects whenever it's ready
+const relayClient = new RelayClient(RELAY_URL);
+const server = createMcpServer(relayClient);
+const transport = new StdioServerTransport();
+
+await server.connect(transport);      // handshake with Claude Code — returns in milliseconds
+
+relayClient.connect().then(() => {
+  log('Relay connected');
+}).catch((error: unknown) => {
+  log(`Relay connection failed: ${error instanceof Error ? error.message : String(error)}`);
+  // Don't exit — tools return "Not connected to relay" until relay is up
+});
+```
+
+**Consequence:** Tools called before the relay connects return `Error: Not connected to relay` from `RelayClient.send()`. This surfaces as an MCP tool error in the agent — acceptable, since the agent can retry after the relay is up.
+
+**Rule:** `server.connect(transport)` must always come before any async I/O that could take more than a second. The relay connection is the only such operation in this codebase.

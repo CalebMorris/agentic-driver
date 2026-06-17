@@ -10,6 +10,7 @@
     "mcp"
   ],
   "scripts": {
+    "postinstall": "node scripts/patch-mcp-sdk.js",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "dev": "npm run dev -w server",
