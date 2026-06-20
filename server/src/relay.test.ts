@@ -177,6 +177,67 @@ describe('createRelayServer', () => {
     await closeClient(agentSocket);
   });
 
+  // ── Status ──────────────────────────────────────────────────────────────────
+
+  it('status message bypasses driving gate and returns current status when no plugin is connected', async () => {
+    const agentSocket = await connectClient('/agent');
+
+    const receivePromise = waitForMessage(agentSocket);
+    agentSocket.send(JSON.stringify({ id: '20', type: 'status' }));
+
+    const received = await receivePromise as {
+      id: string;
+      type: string;
+      data: { pluginConnected: boolean; drivingEnabled: boolean };
+    };
+    expect(received.id).toBe('20');
+    expect(received.type).toBe('result');
+    expect(received.data.pluginConnected).toBe(false);
+    expect(received.data.drivingEnabled).toBe(false);
+
+    await closeClient(agentSocket);
+  });
+
+  it('status message reflects plugin connected and driving enabled', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    const receivePromise = waitForMessage(agentSocket);
+    agentSocket.send(JSON.stringify({ id: '21', type: 'status' }));
+
+    const received = await receivePromise as {
+      id: string;
+      type: string;
+      data: { pluginConnected: boolean; drivingEnabled: boolean };
+    };
+    expect(received.id).toBe('21');
+    expect(received.type).toBe('result');
+    expect(received.data.pluginConnected).toBe(true);
+    expect(received.data.drivingEnabled).toBe(true);
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
+  it('status message is not forwarded to plugin', async () => {
+    const pluginSocket = await connectClient('/plugin');
+    const agentSocket = await connectClient('/agent');
+
+    let pluginReceivedMessage = false;
+    pluginSocket.on('message', () => { pluginReceivedMessage = true; });
+
+    agentSocket.send(JSON.stringify({ id: '22', type: 'status' }));
+    await waitForRelayProcess();
+
+    expect(pluginReceivedMessage).toBe(false);
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
   it('closes unknown client paths immediately', async () => {
     const socket = new WebSocket(`ws://localhost:${TEST_PORT}/unknown`);
     await new Promise<void>((resolve) => socket.once('close', () => resolve()));

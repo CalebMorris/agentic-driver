@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Client } from '@modelcontextprotocol/sdk/client/index';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory';
@@ -218,6 +218,24 @@ describe('MCP Adapter', () => {
     expect(toolResult.content[0].text).toContain('complete');
   });
 
+  // ── check_status ──────────────────────────────────────────────────────────────
+
+  it('check_status tool sends status request to relay and returns status data', async () => {
+    const requestSeen = mockRelayRespond({
+      type: 'result',
+      data: { pluginConnected: true, drivingEnabled: false },
+    });
+
+    const toolResult = await callTool(mcpClient, { name: 'check_status', arguments: {} });
+    const request = await requestSeen;
+
+    expect(request.type).toBe('status');
+    expect(toolResult.isError).toBeFalsy();
+    expect(toolResult.content[0].text).toContain('"relayConnected":true');
+    expect(toolResult.content[0].text).toContain('"pluginConnected":true');
+    expect(toolResult.content[0].text).toContain('"drivingEnabled":false');
+  });
+
   // ── error handling ────────────────────────────────────────────────────────────
 
   it('relay error response is returned as an MCP error result', async () => {
@@ -234,5 +252,31 @@ describe('MCP Adapter', () => {
 
     expect(toolResult.isError).toBe(true);
     expect(toolResult.content[0].text).toContain('ELEMENT_NOT_FOUND');
+  });
+});
+
+describe('MCP Adapter — check_status when relay is not connected', () => {
+  let disconnectedMcpClient: Client;
+
+  beforeEach(async () => {
+    const disconnectedRelayClient = new RelayClient('ws://localhost:1'); // nothing listening
+    const mcpServer = createMcpServer(disconnectedRelayClient);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcpServer.connect(serverTransport);
+    disconnectedMcpClient = new Client({ name: 'test-client-disconnected', version: '1.0.0' });
+    await disconnectedMcpClient.connect(clientTransport);
+  });
+
+  afterEach(async () => {
+    await disconnectedMcpClient.close();
+  });
+
+  it('check_status returns relayConnected false when relay is not connected', async () => {
+    const toolResult = await callTool(disconnectedMcpClient, { name: 'check_status', arguments: {} });
+
+    expect(toolResult.isError).toBeFalsy();
+    expect(toolResult.content[0].text).toContain('"relayConnected":false');
+    expect(toolResult.content[0].text).toContain('"pluginConnected":false');
+    expect(toolResult.content[0].text).toContain('"drivingEnabled":false');
   });
 });

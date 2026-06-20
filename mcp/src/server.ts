@@ -31,6 +31,23 @@ export function createMcpServer(relayClient: RelayClient): McpServer {
   });
 
   server.registerTool(
+    'check_status',
+    {
+      description: 'Check whether the agentic driver is ready to use. Returns whether the MCP adapter is connected to the relay server, whether the browser plugin is connected to the relay, and whether driving has been enabled in the plugin UI.',
+    },
+    async () => {
+      if (!relayClient.isConnected()) {
+        return textResult({ relayConnected: false, pluginConnected: false, drivingEnabled: false });
+      }
+      const response = await relayClient.send({ type: 'status' });
+      if (response.type === 'error') {
+        return errorResult(response.code, response.message);
+      }
+      return textResult({ relayConnected: true, ...(response.data as object) });
+    }
+  );
+
+  server.registerTool(
     'navigate',
     {
       description: 'Navigate the pinned browser tab to a URL and wait for it to finish loading.',

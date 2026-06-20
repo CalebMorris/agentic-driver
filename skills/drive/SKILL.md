@@ -13,27 +13,38 @@ description: >
 
 # Agentic Driver — Agent Runbook
 
----
-
 ## 1. Verify the MCP Server Is Connected
 
-Before driving, confirm the MCP server is reachable and the browser extension has driving enabled.
+Before driving, call `check_status` with no arguments. It returns all three connection states in one call without touching the browser.
 
-**Step 1 — Check the MCP tool is present.**
-Call `view_current_site` with no arguments. This is the zero-risk probe: it reads the current tab without changing anything.
+```
+check_status()
+→ { relayConnected: bool, pluginConnected: bool, drivingEnabled: bool }
+```
 
-- **Success:** returns JSON like `{ "id": 42, "url": "https://...", "title": "...", "status": "complete", "active": true }` — proceed to driving.
-- **Error `DRIVING_DISABLED`:** the browser extension is connected to the relay but the user has not clicked "Enable Driving" in the extension popup. **Stop and ask the user to enable driving.** Do not attempt any other tool calls.
-- **MCP tool call fails / tool not found:** the relay server or MCP adapter is not running. **Stop and tell the user** to start the relay (`npm run start` from the `server/` workspace) and verify the MCP server is connected (`claude mcp list`). Do not retry automatically.
+Decision tree:
+
+- **`relayConnected: false`** — the relay server is not running. **Stop and tell the user** to start it (`npm run dev` from the `server/` workspace) and verify the MCP adapter is connected (`claude mcp list`). Do not retry automatically.
+- **`pluginConnected: false`** — the relay is up but the browser extension has not connected to it. **Stop and ask the user** to open Chrome, ensure the Agentic Driver extension is installed and active, and confirm it shows "Connected" in the popup.
+- **`drivingEnabled: false`** — both are connected but the user has not clicked "Enable Driving" in the extension popup. **Stop and ask the user to enable driving.**
+- **All three `true`** — proceed to driving.
 
 **Step 2 — Confirm tab context.**
-Use the `url` and `title` from `view_current_site` to confirm the active tab is the correct page before taking any destructive action (form submission, navigation away from unsaved work, etc.).
-
----
+Call `view_current_site` to get the current URL and title, then confirm the active tab is the correct page before taking any destructive action (form submission, navigation away from unsaved work, etc.).
 
 ## 2. Available Tools
 
-All tools communicate via the relay WebSocket. Every call blocks until the browser completes the action.
+All tools communicate via the relay WebSocket. Every call blocks until the action completes.
+
+### `check_status()`
+Returns the current connection state of the entire driver stack. Always call this first.
+
+```
+Response: { relayConnected: bool, pluginConnected: bool, drivingEnabled: bool }
+```
+
+- Does not touch the browser or require driving to be enabled — safe to call at any time.
+- Use it at the start of every session (see Section 1) and any time a subsequent tool returns an unexpected error.
 
 ### `view_current_site`
 Returns metadata about the currently pinned tab.
@@ -43,8 +54,6 @@ Response: { id, url, title, status, active, faviconUrl }
 ```
 
 Use this to orient to the current page (URL, page title) before deciding what to do next. Also the cheapest way to verify the connection is alive mid-session.
-
----
 
 ### `navigate(url: string)`
 Navigates the pinned tab to `url` and waits for the page to finish loading.
@@ -57,8 +66,6 @@ Response: { url, status: "complete" }
 - The tool blocks until the tab finishes loading — no polling or waiting is needed after the call returns.
 - On failure: `NAVIGATION_FAILED` error — the page could not load. Check the URL, then try once more; if still failing, consider a handoff.
 
----
-
 ### `click(selector: string)`
 Clicks the element matching the CSS `selector` in the pinned tab.
 
@@ -69,8 +76,6 @@ Response: { status: "ok" }
 - Call `read_html` or `screenshot` first when the target selector is uncertain.
 - Prefer stable selectors (`[data-testid="…"]`, `#id`, `[name="…"]`) over positional ones (`:nth-child`).
 - On failure: `ELEMENT_NOT_FOUND` — the selector matched nothing. Re-read the HTML to verify the current DOM, update the selector, and retry. After two failed attempts consider a handoff.
-
----
 
 ### `read_html(selector?: string)`
 Returns the outer HTML of the page, or a subtree if `selector` is provided.
@@ -83,8 +88,6 @@ Response: "<html>…</html>"  (or subtree HTML when selector is given)
 - Use this to find selectors, read form state, or verify that an action took effect.
 - Full-page HTML can be large; prefer scoped reads when the relevant DOM region is known.
 
----
-
 ### `screenshot()`
 Returns a base64-encoded PNG of the visible area of the pinned tab.
 
@@ -95,8 +98,6 @@ Response: image/png content block
 - Use to visually verify page state when HTML is ambiguous or the page is canvas/image-heavy.
 - On failure: `CAPTURE_FAILED` — retry once, then use `read_html` as a fallback.
 
----
-
 ### `handoff(reason: string)`
 Pauses agent control and notifies the user that human intervention is needed. **Blocks until the human clicks "Done" in the extension popup.**
 
@@ -105,8 +106,6 @@ Response: { status: "complete" }  (arrives only after human signals done)
 ```
 
 See Section 4 for full handoff guidance.
-
----
 
 ## 3. Driving Strategy
 
@@ -133,8 +132,6 @@ After `navigate` returns, the page is loaded but dynamic content (SPAs, lazy loa
 ### Form submission
 
 Prefer clicking the submit button (`click({ selector: "button[type='submit']" })`) over simulating keyboard enter, unless the form explicitly requires it. After submission, call `view_current_site` or `read_html` to confirm navigation landed on the expected result page.
-
----
 
 ## 4. Human Handoff
 
@@ -170,8 +167,6 @@ When `handoff` returns `{ status: "complete" }`, the human has signalled they ar
 
 If `handoff` returns an error with `UNKNOWN` and the message contains "Plugin disconnected", the extension was closed while waiting. Do not retry `handoff` — the relay has already cleaned up the pending request. Inform the user and ask them to reopen the extension and re-enable driving before resuming.
 
----
-
 ## 5. Error Handling Reference
 
 | Error code | Meaning | Recommended recovery |
@@ -183,8 +178,6 @@ If `handoff` returns an error with `UNKNOWN` and the message contains "Plugin di
 | `UNKNOWN` | Unexpected plugin-side error | Retry once; if repeated → handoff with a descriptive reason. |
 
 **Never loop indefinitely on errors.** If the same error recurs after one retry, either change approach or request a handoff.
-
----
 
 ## 6. Session End / Cleanup
 

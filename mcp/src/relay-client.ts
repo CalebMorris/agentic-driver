@@ -49,6 +49,10 @@ export class RelayClient {
     });
   }
 
+  isConnected(): boolean {
+    return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+  }
+
   close(): void {
     this.socket?.close();
   }

@@ -120,6 +120,15 @@ export function createRelayServer(port: number): RelayServer {
           return;
         }
 
+        if (message.type === 'status') {
+          sendToAgent({
+            id: message.id ?? '',
+            type: 'result',
+            data: { pluginConnected: isPluginConnected(), drivingEnabled },
+          });
+          return;
+        }
+
         if (!drivingEnabled) {
           sendToAgent({
             id: message.id ?? '',

@@ -2,6 +2,10 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocketServer, WebSocket } from 'ws';
 import { RelayClient } from './relay-client';
 
+function waitForRelayProcess(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 10));
+}
+
 const TEST_PORT = 9996;
 
 describe('RelayClient', () => {
@@ -24,6 +28,29 @@ describe('RelayClient', () => {
     });
     return { wss, serverSocket };
   }
+
+  it('isConnected returns false before connecting', () => {
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`);
+    expect(client.isConnected()).toBe(false);
+  });
+
+  it('isConnected returns true after connecting', async () => {
+    await startServer();
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`);
+    await client.connect();
+    expect(client.isConnected()).toBe(true);
+    client.close();
+  });
+
+  it('isConnected returns false after relay socket closes', async () => {
+    const { serverSocket: serverSocketPromise } = await startServer();
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`);
+    await client.connect();
+    const serverSocket = await serverSocketPromise;
+    serverSocket.close();
+    await waitForRelayProcess();
+    expect(client.isConnected()).toBe(false);
+  });
 
   it('pending send() resolves with RELAY_DISCONNECTED when the relay socket closes', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
