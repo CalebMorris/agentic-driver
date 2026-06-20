@@ -4,13 +4,15 @@ set -euo pipefail
 input=$(cat)
 command=$(echo "$input" | jq -r '.tool_input.command // empty')
 
-# Block `npm --prefix .` — dot means current directory, which bypasses workspace
-# mode and can create stray node_modules / package-lock.json inside a workspace.
-# Matches: --prefix . or --prefix=. followed by end-of-string, whitespace, or a
-# shell metacharacter. Does NOT match --prefix ./subdir (a legitimate subpath).
-if echo "$command" | grep -qE 'npm[[:space:]].*--prefix[[:space:]=]+\.([ \t;|&]|$)'; then
+# Block `npm --prefix .` (current directory) and `npm --prefix /abs/path` (absolute
+# paths) — both bypass workspace mode and can create stray node_modules /
+# package-lock.json outside the workspace.
+# Matches: --prefix . followed by end-of-string/whitespace/metacharacter,
+#          OR --prefix /... (any absolute path).
+# Does NOT match --prefix ./subdir (a legitimate relative subpath).
+if echo "$command" | grep -qE 'npm[[:space:]].*--prefix[[:space:]=]+(\.([ \t;|&]|$)|/)'; then
   cat >&2 <<'ERRMSG'
-Blocked: `npm --prefix .` is not allowed in this npm workspace monorepo.
+Blocked: `npm --prefix .` and `npm --prefix /abs/path` are not allowed in this npm workspace monorepo.
 
 Use workspace-aware commands instead:
   Target a specific workspace:   npm run <script> -w <workspace>
