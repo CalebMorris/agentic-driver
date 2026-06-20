@@ -1,6 +1,7 @@
 const WS_URL = 'ws://localhost:9999/plugin';
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+const KEEP_ALIVE_ALARM = 'agentic-driver-keep-alive';
 
 let socket = null;
 var reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
@@ -10,6 +11,39 @@ var pinnedTabId = null;
 var drivingEnabled = false;
 var handoffPending = false;
 var handoffReason = null;
+
+// Persist driving state so it survives MV3 service worker termination.
+async function saveState() {
+  await chrome.storage.session.set({ drivingEnabled, pinnedTabId });
+}
+
+// Called at module level on every service worker startup. If driving was active before
+// the worker was terminated, this reconnects the WebSocket and restores state.
+async function restoreStateFromStorage() {
+  const stored = await chrome.storage.session.get(['drivingEnabled', 'pinnedTabId']);
+  if (stored.drivingEnabled && !socket) {
+    drivingEnabled = stored.drivingEnabled;
+    pinnedTabId = stored.pinnedTabId;
+    updateActionIcon(true);
+    reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
+    connect();
+  }
+}
+
+// Test helper: atomically reset in-memory state (as Chrome does on SW termination)
+// then immediately restore from storage (as module-level startup code does on restart).
+// Using a single evaluate() prevents the SW from being truly terminated between the two steps.
+async function simulateWorkerRestart() {
+  drivingEnabled = false;
+  pinnedTabId = null;
+  handoffPending = false;
+  handoffReason = null;
+  if (socket) {
+    socket.close();
+    socket = null;
+  }
+  await restoreStateFromStorage();
+}
 
 function connect() {
   const ws = new WebSocket(WS_URL);
@@ -38,6 +72,8 @@ function connect() {
       pinnedTabId = null;
       drivingEnabled = false;
       updateActionIcon(false);
+      saveState();
+      chrome.alarms.clear(KEEP_ALIVE_ALARM);
       socket = null;
       ws.close();
       return;
@@ -98,6 +134,8 @@ async function enableDriving() {
     pinnedTabId = tab.id;
     drivingEnabled = true;
     updateActionIcon(true);
+    await saveState();
+    chrome.alarms.create(KEEP_ALIVE_ALARM, { periodInMinutes: 0.5 });
     reconnectDelayMs = RECONNECT_BASE_DELAY_MS;
     if (!socket) {
       connect();
@@ -110,6 +148,8 @@ function disableDriving() {
   pinnedTabId = null;
   drivingEnabled = false;
   updateActionIcon(false);
+  saveState();
+  chrome.alarms.clear(KEEP_ALIVE_ALARM);
   sendControlMessage({ type: 'driving_disabled' });
   if (socket) {
     socket.close();
@@ -318,4 +358,10 @@ function errorResponse(id, code, message) {
   return { id, type: 'error', code, message };
 }
 
+// Reconnect if the service worker was restarted by the keep-alive alarm.
+// The alarm is only active while driving is enabled (created in enableDriving,
+// cleared in disableDriving), so the worker idles normally when not driving.
+chrome.alarms.onAlarm.addListener(() => restoreStateFromStorage());
+
 updateActionIcon(false);
+restoreStateFromStorage();

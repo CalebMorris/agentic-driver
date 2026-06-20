@@ -5,6 +5,8 @@
   "description": "Connects to a local WebSocket server to allow AI agents to drive the browser.",
   "permissions": [
     "activeTab",
+    "alarms",
+    "storage",
     "tabs",
     "scripting"
   ],

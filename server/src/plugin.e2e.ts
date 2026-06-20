@@ -151,6 +151,38 @@ test.describe('Plugin E2E', () => {
     await page.close();
   });
 
+  test('resumes driving after service worker state is reset (simulated restart)', async () => {
+    const [worker] = browserContext.serviceWorkers();
+    const page = await browserContext.newPage();
+    await page.goto(`http://localhost:${testServerPort}/`);
+
+    const pluginConnected = relay.waitForPluginConnect();
+    await enableDrivingOnWorker(worker);
+    await pluginConnected;
+    expect(relay.isPluginConnected()).toBe(true);
+
+    // simulateWorkerRestart() atomically resets in-memory state (as Chrome does on SW
+    // termination) then immediately calls restoreStateFromStorage() (as module-level
+    // startup code does on restart). A single evaluate() keeps the worker alive throughout.
+    const pluginDisconnected = relay.waitForPluginDisconnect();
+    await worker.evaluate(() =>
+      (globalThis as unknown as { simulateWorkerRestart: () => Promise<void> }).simulateWorkerRestart()
+    );
+    await pluginDisconnected;
+
+    // After restart the plugin must have reconnected to the relay with driving re-enabled.
+    await relay.waitForPluginConnect();
+    expect(relay.isPluginConnected()).toBe(true);
+
+    // Driving actions must still work after reconnection.
+    await waitForRelayProcess();
+    const response = await request(agent, { id: 'sw1', type: 'read_html' }) as Record<string, unknown>;
+    expect(response.type).toBe('result');
+
+    await disableDrivingOnWorker(worker);
+    await page.close();
+  });
+
   // ── Phase 0: Driving Gate ─────────────────────────────────────────────────
   // These tests run before any driving is enabled.
 
