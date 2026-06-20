@@ -33,6 +33,16 @@ function connect() {
       return;
     }
 
+    if (message.type === 'server_closing') {
+      console.log('[agentic-driver] Relay server is shutting down — disabling driving');
+      pinnedTabId = null;
+      drivingEnabled = false;
+      updateActionIcon(false);
+      socket = null;
+      ws.close();
+      return;
+    }
+
     const response = await handleMessage(message);
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(response));

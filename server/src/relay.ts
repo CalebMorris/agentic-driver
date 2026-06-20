@@ -11,6 +11,8 @@ export interface RelayServer {
   waitForPluginConnect: () => Promise<void>;
   /** Resolves on the next plugin disconnection (immediately if not connected). */
   waitForPluginDisconnect: () => Promise<void>;
+  /** Sends server_closing to the plugin, closes all connections, then closes the WSS. */
+  closeGracefully: () => Promise<void>;
 }
 
 export function createRelayServer(port: number): RelayServer {
@@ -165,5 +167,18 @@ export function createRelayServer(port: number): RelayServer {
     }
   });
 
-  return { wss, waitForPlugin: waitForPluginConnect, isPluginConnected, waitForPluginConnect, waitForPluginDisconnect };
+  function closeGracefully(): Promise<void> {
+    return new Promise((resolve) => {
+      if (pluginSocket?.readyState === WebSocket.OPEN) {
+        pluginSocket.send(JSON.stringify({ type: 'server_closing' }));
+        pluginSocket.close();
+      }
+      if (agentSocket?.readyState === WebSocket.OPEN) {
+        agentSocket.close();
+      }
+      wss.close(() => resolve());
+    });
+  }
+
+  return { wss, waitForPlugin: waitForPluginConnect, isPluginConnected, waitForPluginConnect, waitForPluginDisconnect, closeGracefully };
 }

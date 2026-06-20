@@ -42,7 +42,9 @@ describe('createRelayServer', () => {
   });
 
   afterEach(async () => {
-    await new Promise<void>((resolve) => relay.wss.close(() => resolve()));
+    if (relay.wss.address() !== null) {
+      await new Promise<void>((resolve) => relay.wss.close(() => resolve()));
+    }
   });
 
   // ── Driving gate ────────────────────────────────────────────────────────────
@@ -236,6 +238,22 @@ describe('createRelayServer', () => {
 
     await closeClient(pluginSocket);
     await closeClient(agentSocket);
+  });
+
+  // ── closeGracefully ─────────────────────────────────────────────────────────
+
+  it('closeGracefully: sends server_closing to plugin before closing', async () => {
+    const pluginSocket = await connectClient('/plugin');
+
+    const receivePromise = waitForMessage(pluginSocket);
+    await relay.closeGracefully();
+
+    const received = await receivePromise as { type: string };
+    expect(received.type).toBe('server_closing');
+  });
+
+  it('closeGracefully: resolves without error when no plugin is connected', async () => {
+    await expect(relay.closeGracefully()).resolves.toBeUndefined();
   });
 
   it('closes unknown client paths immediately', async () => {
