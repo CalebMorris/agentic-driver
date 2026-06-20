@@ -4,6 +4,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory';
 import { createMcpServer } from './server';
 import { RelayClient } from './relay-client';
+import type { Logger } from 'pino';
+import { createTestLogger } from './test-helpers';
 
 // callTool returns a complex union type; narrow to the common structured result for assertions.
 type McpToolResult = {
@@ -278,5 +280,100 @@ describe('MCP Adapter — check_status when relay is not connected', () => {
     expect(toolResult.content[0].text).toContain('"relayConnected":false');
     expect(toolResult.content[0].text).toContain('"pluginConnected":false');
     expect(toolResult.content[0].text).toContain('"drivingEnabled":false');
+  });
+});
+
+const LOGGING_TEST_PORT = 9993;
+
+const PINO_INFO = 30;
+const PINO_ERROR = 50;
+
+describe('MCP Adapter — structured logging', () => {
+  let mockRelayWss: WebSocketServer;
+  let mockRelaySocket: WebSocket;
+  let relayClient: RelayClient;
+  let mcpClient: Client;
+
+  beforeAll(async () => {
+    mockRelayWss = new WebSocketServer({ port: LOGGING_TEST_PORT });
+    await new Promise<void>((resolve) => {
+      if (mockRelayWss.address()) resolve();
+      else mockRelayWss.once('listening', resolve);
+    });
+
+    const socketConnected = new Promise<WebSocket>((resolve) => {
+      mockRelayWss.once('connection', resolve);
+    });
+
+    relayClient = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`);
+    await relayClient.connect();
+    mockRelaySocket = await socketConnected;
+  });
+
+  afterAll(async () => {
+    await mcpClient?.close();
+    relayClient.close();
+    await new Promise<void>((resolve) => mockRelayWss.close(() => resolve()));
+  });
+
+  function mockRelayRespond(response: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return new Promise((resolve) => {
+      mockRelaySocket.once('message', (data) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>;
+        mockRelaySocket.send(JSON.stringify({ id: message.id, ...response }));
+        resolve(message);
+      });
+    });
+  }
+
+  async function setupClientWithLogger(logger: Logger): Promise<Client> {
+    const mcpServer = createMcpServer(relayClient, logger);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcpServer.connect(serverTransport);
+    const client = new Client({ name: 'test-client-logging', version: '1.0.0' });
+    await client.connect(clientTransport);
+    return client;
+  }
+
+  it('logs mcp_tool_call with tool name and args on navigate', async () => {
+    const { logger, lines } = createTestLogger();
+    mcpClient = await setupClientWithLogger(logger);
+
+    mockRelayRespond({ type: 'result', data: { status: 'complete' } });
+    await callTool(mcpClient, { name: 'navigate', arguments: { url: 'https://example.com' } });
+
+    const toolCallLog = lines.find((line) => line.msg === 'mcp_tool_call');
+    expect(toolCallLog).toBeDefined();
+    expect(toolCallLog?.level).toBe(PINO_INFO);
+    expect(toolCallLog?.tool).toBe('navigate');
+    expect(toolCallLog?.url).toBe('https://example.com');
+  });
+
+  it('logs mcp_tool_success with durationMs on successful tool result', async () => {
+    const { logger, lines } = createTestLogger();
+    mcpClient = await setupClientWithLogger(logger);
+
+    mockRelayRespond({ type: 'result', data: { status: 'ok' } });
+    await callTool(mcpClient, { name: 'click', arguments: { selector: '#btn' } });
+
+    const successLog = lines.find((line) => line.msg === 'mcp_tool_success');
+    expect(successLog).toBeDefined();
+    expect(successLog?.level).toBe(PINO_INFO);
+    expect(successLog?.tool).toBe('click');
+    expect(typeof successLog?.durationMs).toBe('number');
+  });
+
+  it('logs mcp_tool_error with durationMs when relay returns an error', async () => {
+    const { logger, lines } = createTestLogger();
+    mcpClient = await setupClientWithLogger(logger);
+
+    mockRelayRespond({ type: 'error', code: 'ELEMENT_NOT_FOUND', message: 'No element' });
+    await callTool(mcpClient, { name: 'click', arguments: { selector: '#missing' } });
+
+    const errorLog = lines.find((line) => line.msg === 'mcp_tool_error');
+    expect(errorLog).toBeDefined();
+    expect(errorLog?.level).toBe(PINO_ERROR);
+    expect(errorLog?.tool).toBe('click');
+    expect(typeof errorLog?.durationMs).toBe('number');
   });
 });

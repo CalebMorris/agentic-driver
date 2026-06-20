@@ -47,6 +47,22 @@ npm run install:mcp
 The `install:mcp` script registers the compiled adapter with `claude mcp add`. After registering, Claude CLI will have access to the browser control tools (`navigate`, `click`, `read_html`, `screenshot`, `view_current_site`, `handoff`) whenever the relay server is running.
 
 
+## Logs
+
+Both the relay server and MCP adapter write structured JSON logs to `~/.local/state/agentic-driver/` by default (respects `$XDG_STATE_HOME` if set):
+
+| Component | File |
+|---|---|
+| Relay server | `~/.local/state/agentic-driver/relay.log` |
+| MCP adapter | `~/.local/state/agentic-driver/mcp.log` |
+
+To follow them live:
+
+```sh
+tail -f ~/.local/state/agentic-driver/relay.log
+tail -f ~/.local/state/agentic-driver/mcp.log
+```
+
 ## Installing in Brave
 
 1. Open Brave and navigate to `brave://extensions`

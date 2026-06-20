@@ -13,6 +13,7 @@ Gotchas and correct patterns for the `/mcp` package (MCP server that bridges Cla
 | 7 | SDK subpath imports crash the process at startup — postinstall patch required |
 | 8 | Diagnosing MCP connection failures: `-32000` vs timeout vs working |
 | 9 | Relay connection must be non-blocking — connect stdio first, relay in background |
+| 10 | Adding cross-cutting behaviour (logging, auth, metrics) to every tool handler |
 
 
 ## 1. `TS2589` deep instantiation — use zod v4, not v3
@@ -272,19 +273,47 @@ When `/mcp` fails, the error message tells you which layer broke:
 | `connection timed out after 30000ms` | Process started but handshake didn't complete in 30 s | Log exists; check what step it's stuck on |
 | `Reconnected to agentic-driver` | Success | — |
 
-**Check the log first:**
+**Check the log first.**
 
-```
+The log at `/tmp/agentic-driver-mcp.log` is **structured JSON lines** — one JSON object per line. Each entry has `timestamp`, `level` (`"info"` or `"error"`), and `event`.
+
+```bash
+# Show all events in order
 cat /tmp/agentic-driver-mcp.log
+
+# Show just the last few events, pretty-printed (requires jq)
+tail -5 /tmp/agentic-driver-mcp.log | jq .
 ```
 
-The log is written by `index.ts` at each startup step. Mapping log output to root causes:
+Startup sequence emitted by `index.ts` (each is an info-level event):
 
-| Last log line | Root cause |
+```
+{"event":"startup","relayUrl":"ws://localhost:9999/agent", ...}
+{"event":"mcp_connecting", ...}
+{"event":"mcp_ready", ...}
+{"event":"relay_connect", ...}   ← appears later, once relay WS connects
+```
+
+Mapping the last event to root causes:
+
+| Last event in log | Root cause |
 |---|---|
 | *(file doesn't exist)* | `require()` crashed before any code ran — module resolution failure (see § 7) |
-| `Connecting to relay...` (no further lines, timeout) | Relay connection is blocking stdio startup — see § 9 |
-| `MCP server ready` | MCP is running; connection failure is on Claude Code's side |
+| `startup` or `mcp_connecting` | Something blocked before `server.connect(transport)` returned — should not happen given § 9 |
+| `mcp_ready` | MCP is running; failure is on Claude Code's side |
+| `relay_connect_failed` (error) | Relay unreachable at startup — non-fatal, tools return "Not connected" until relay is up |
+| `fatal` (error) | Process exited; check `message` field for stack trace |
+
+Per-request events that appear during tool calls (useful for diagnosing stuck or slow tools):
+
+| Event | Level | When |
+|---|---|---|
+| `mcp_tool_call` | info | Tool handler entered; includes `tool` name and all input args |
+| `mcp_tool_success` | info | Tool returned successfully; includes `durationMs` |
+| `mcp_tool_error` | error | Tool returned `isError: true`; includes `durationMs` |
+| `relay_send` | info | Outbound WS message; includes `requestId` and `actionType` |
+| `relay_receive` | info / error | Inbound WS message; info for success, error for relay error responses |
+| `relay_disconnect` | info | Relay WS closed |
 
 **After any code change, always delete the old log before reconnecting** so you're reading fresh output:
 
@@ -309,16 +338,15 @@ await server.connect(transport);      // too late; Claude Code gave up
 
 ```typescript
 // CORRECT — stdio handshake completes immediately; relay connects whenever it's ready
-const relayClient = new RelayClient(RELAY_URL);
-const server = createMcpServer(relayClient);
+const logger = createLogger(LOG_FILE);
+const relayClient = new RelayClient(RELAY_URL, logger);
+const server = createMcpServer(relayClient, logger);
 const transport = new StdioServerTransport();
 
 await server.connect(transport);      // handshake with Claude Code — returns in milliseconds
 
-relayClient.connect().then(() => {
-  log('Relay connected');
-}).catch((error: unknown) => {
-  log(`Relay connection failed: ${error instanceof Error ? error.message : String(error)}`);
+relayClient.connect().catch((error: unknown) => {
+  logger.error('relay_connect_failed', { message: error instanceof Error ? error.message : String(error) });
   // Don't exit — tools return "Not connected to relay" until relay is up
 });
 ```
@@ -326,3 +354,76 @@ relayClient.connect().then(() => {
 **Consequence:** Tools called before the relay connects return `Error: Not connected to relay` from `RelayClient.send()`. This surfaces as an MCP tool error in the agent — acceptable, since the agent can retry after the relay is up.
 
 **Rule:** `server.connect(transport)` must always come before any async I/O that could take more than a second. The relay connection is the only such operation in this codebase.
+
+
+## 10. Adding cross-cutting behaviour to every tool handler
+
+**Context:** You want to add something (logging, auth checks, metrics) that runs before and after every tool call, without repeating the same wrapper code inside each handler.
+
+**Trap — per-handler wrapping:** The instinct is to write a `withLogging(name, args, handler)` wrapper and call it inside every `registerTool` callback. This works but is a code smell: each tool registration couples its business logic to the cross-cutting concern, and adding a second cross-cutting concern (e.g. rate limiting) means touching every handler again.
+
+```typescript
+// WRONG — repeats the wrapper at every call site
+server.registerTool('navigate', config, async ({ url }) =>
+  withLogging('navigate', { url }, async () =>
+    handleRelayResponse(await relayClient.send({ type: 'navigate', url }))
+  )
+);
+// ... same pattern for every tool
+```
+
+**Fix — patch `registerTool` once before registering any tools.** The patched version wraps every handler it receives, so subsequent `registerTool` calls pick up the hooks automatically with no per-tool boilerplate.
+
+```typescript
+function patchRegisterToolWithLogging(server: McpServer, logger: Logger): void {
+  type AnyHandler = (args: unknown) => Promise<{ isError?: boolean }>;
+  type AnyRegisterTool = (name: string, config: unknown, handler: AnyHandler) => void;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const s = server as any;
+  const orig = s.registerTool.bind(server) as AnyRegisterTool;
+
+  s.registerTool = (name: string, config: unknown, handler: AnyHandler) => {
+    orig(name, config, async (args: unknown) => {
+      // ── before hook ──────────────────────────────────────────────
+      const argsRecord = args != null && typeof args === 'object'
+        ? (args as Record<string, unknown>)
+        : {};
+      logger.info('mcp_tool_call', { tool: name, ...argsRecord });
+      const startedAt = Date.now();
+
+      const result = await handler(args);
+
+      // ── after hook ───────────────────────────────────────────────
+      const durationMs = Date.now() - startedAt;
+      if (result?.isError) {
+        logger.error('mcp_tool_error', { tool: name, durationMs });
+      } else {
+        logger.info('mcp_tool_success', { tool: name, durationMs });
+      }
+      return result;
+    });
+  };
+}
+
+export function createMcpServer(relayClient: RelayClient, logger: Logger = noopLogger): McpServer {
+  const server = new McpServer({ name: 'agentic-driver', version: '0.1.0' });
+
+  // Apply BEFORE any registerTool calls — existing registrations are not retroactively patched.
+  patchRegisterToolWithLogging(server, logger);
+
+  // Tool handlers are now completely clean — no wrapper noise.
+  server.registerTool('navigate', config, async ({ url }) =>
+    handleRelayResponse(await relayClient.send({ type: 'navigate', url }))
+  );
+  // ...
+}
+```
+
+**Why `as any` is required here:** `registerTool` is generic (`registerTool<Args extends ZodRawShape | undefined>`). Trying to capture its exact type signature and reconstruct it for the replacement causes `TS2589: Type instantiation is excessively deep` — the same recursion limit described in § 1. Casting the server to `any` at the boundary is safe because the SDK validates tool args at runtime regardless. Isolate the cast inside the patch function so the rest of the file stays fully typed.
+
+**Why this pattern works:** The replacement function closes over `orig` (the real `registerTool`). Every call to `server.registerTool(...)` after the patch goes through the replacement, which wraps the handler before forwarding to `orig`. Tools registered before the patch are unaffected — patch order matters.
+
+**No-arg tools (`screenshot`, `check_status`, etc.) work without any special handling.** The SDK calls the handler with `undefined` or `{}` for tools with no `inputSchema`; spreading an empty object into the log entry produces `{ tool: 'screenshot' }` with no noise.
+
+**SDK middleware status (as of mid-2026):** `McpServer` has no native `server.use()`. A middleware API is proposed in [typescript-sdk issue #1238](https://github.com/modelcontextprotocol/typescript-sdk/issues/1238) (P2 priority, not yet merged). Until it lands, monkey-patching `registerTool` is the established approach — it is also the mechanism used by the third-party `mcp-proxy-wrapper` library.

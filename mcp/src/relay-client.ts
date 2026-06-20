@@ -1,36 +1,53 @@
 import { WebSocket } from 'ws';
+import { type Logger, noopLogger } from './logger';
 
 type RelayResponse = Record<string, unknown>;
-type PendingResolver = (response: RelayResponse) => void;
+type PendingRequest = {
+  resolver: (response: RelayResponse) => void;
+  startedAt: number;
+};
 
 export class RelayClient {
   private socket: WebSocket | null = null;
-  private pendingRequests: Map<string, PendingResolver> = new Map();
+  private pendingRequests: Map<string, PendingRequest> = new Map();
   private nextId = 0;
 
-  constructor(private readonly url: string) {}
+  constructor(
+    private readonly url: string,
+    private readonly logger: Logger = noopLogger,
+  ) {}
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.socket = new WebSocket(this.url);
 
-      this.socket.on('open', () => resolve());
+      this.socket.on('open', () => {
+        this.logger.info({ url: this.url }, 'relay_connect');
+        resolve();
+      });
       this.socket.on('error', reject);
 
       this.socket.on('message', (data) => {
         const response = JSON.parse(data.toString()) as RelayResponse;
         const requestId = response.id as string;
-        const resolver = this.pendingRequests.get(requestId);
-        if (resolver) {
+        const pending = this.pendingRequests.get(requestId);
+        if (pending) {
           this.pendingRequests.delete(requestId);
-          resolver(response);
+          const durationMs = Date.now() - pending.startedAt;
+          if (response.type === 'error') {
+            this.logger.error({ requestId, code: response.code, message: response.message, durationMs }, 'relay_receive');
+          } else {
+            this.logger.info({ requestId, responseType: response.type, durationMs }, 'relay_receive');
+          }
+          pending.resolver(response);
         }
       });
 
       this.socket.on('close', () => {
         this.socket = null;
-        for (const [requestId, resolver] of this.pendingRequests) {
-          resolver({ id: requestId, type: 'error', code: 'RELAY_DISCONNECTED', message: 'Relay connection closed' });
+        this.logger.info({ url: this.url }, 'relay_disconnect');
+        for (const [requestId, pending] of this.pendingRequests) {
+          pending.resolver({ id: requestId, type: 'error', code: 'RELAY_DISCONNECTED', message: 'Relay connection closed' });
         }
         this.pendingRequests.clear();
       });
@@ -44,7 +61,8 @@ export class RelayClient {
         return;
       }
       const requestId = String(++this.nextId);
-      this.pendingRequests.set(requestId, resolve);
+      this.logger.info({ requestId, actionType: action.type }, 'relay_send');
+      this.pendingRequests.set(requestId, { resolver: resolve, startedAt: Date.now() });
       this.socket.send(JSON.stringify({ id: requestId, ...action }));
     });
   }

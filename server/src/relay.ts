@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
+import pino from 'pino';
 
 export interface RelayServer {
   wss: WebSocketServer;
@@ -15,7 +16,7 @@ export interface RelayServer {
   closeGracefully: () => Promise<void>;
 }
 
-export function createRelayServer(port: number): RelayServer {
+export function createRelayServer(port: number, logger = pino({ level: 'silent' })): RelayServer {
   const wss = new WebSocketServer({ port });
 
   let pluginSocket: WebSocket | null = null;
@@ -56,7 +57,7 @@ export function createRelayServer(port: number): RelayServer {
     if (clientPath === '/plugin') {
       pluginSocket = socket;
       pluginConnectWaiters.splice(0).forEach(fn => fn());
-      console.log('[relay] Plugin connected');
+      logger.info('plugin_connected');
 
       socket.on('message', (data: Buffer) => {
         let parsed: { type?: string; id?: string };
@@ -68,12 +69,12 @@ export function createRelayServer(port: number): RelayServer {
 
         if (parsed.type === 'driving_enabled') {
           drivingEnabled = true;
-          console.log('[relay] Driving enabled');
+          logger.info('driving_enabled');
           return;
         }
         if (parsed.type === 'driving_disabled') {
           drivingEnabled = false;
-          console.log('[relay] Driving disabled');
+          logger.info('driving_disabled');
           return;
         }
         if (parsed.type === 'handoff_complete') {
@@ -107,12 +108,12 @@ export function createRelayServer(port: number): RelayServer {
           });
           pendingHandoffId = null;
         }
-        console.log('[relay] Plugin disconnected');
+        logger.info('plugin_disconnected');
       });
 
     } else if (clientPath === '/agent') {
       agentSocket = socket;
-      console.log('[relay] Agent connected');
+      logger.info('agent_connected');
 
       socket.on('message', (data: Buffer) => {
         let message: { id?: string; type?: string };
@@ -121,6 +122,8 @@ export function createRelayServer(port: number): RelayServer {
         } catch {
           return;
         }
+
+        logger.info({ messageType: message.type }, 'agent_message');
 
         if (message.type === 'status') {
           sendToAgent({
@@ -159,7 +162,7 @@ export function createRelayServer(port: number): RelayServer {
 
       socket.on('close', () => {
         agentSocket = null;
-        console.log('[relay] Agent disconnected');
+        logger.info('agent_disconnected');
       });
 
     } else {

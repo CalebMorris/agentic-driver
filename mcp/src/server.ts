@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp';
 import { z } from 'zod';
+import { type Logger, noopLogger } from './logger';
 import { RelayClient } from './relay-client';
 
 type RelayResponse = Record<string, unknown>;
@@ -24,11 +25,42 @@ function handleRelayResponse(response: RelayResponse) {
   return textResult(response.data);
 }
 
-export function createMcpServer(relayClient: RelayClient): McpServer {
+// Patch registerTool before any tools are registered so logging is injected
+// into every handler automatically — no per-tool boilerplate required.
+// registerTool has complex generics; we cast to avoid fighting them at the
+// interception boundary, which is safe because the SDK validates args at runtime.
+function patchRegisterToolWithLogging(server: McpServer, logger: Logger): void {
+  type AnyHandler = (args: unknown) => Promise<{ isError?: boolean }>;
+  type AnyRegisterTool = (name: string, config: unknown, handler: AnyHandler) => void;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const s = server as any;
+  const orig = s.registerTool.bind(server) as AnyRegisterTool;
+
+  s.registerTool = (name: string, config: unknown, handler: AnyHandler) => {
+    orig(name, config, async (args: unknown) => {
+      const argsRecord = args != null && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+      logger.info({ tool: name, ...argsRecord }, 'mcp_tool_call');
+      const startedAt = Date.now();
+      const result = await handler(args);
+      const durationMs = Date.now() - startedAt;
+      if (result?.isError) {
+        logger.error({ tool: name, durationMs }, 'mcp_tool_error');
+      } else {
+        logger.info({ tool: name, durationMs }, 'mcp_tool_success');
+      }
+      return result;
+    });
+  };
+}
+
+export function createMcpServer(relayClient: RelayClient, logger: Logger = noopLogger): McpServer {
   const server = new McpServer({
     name: 'agentic-driver',
     version: '0.1.0',
   });
+
+  patchRegisterToolWithLogging(server, logger);
 
   server.registerTool(
     'check_status',

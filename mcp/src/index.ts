@@ -1,40 +1,35 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio';
-import * as fs from 'fs';
+import { createLogger, LOG_DIR } from './logger';
 import { RelayClient } from './relay-client';
 import { createMcpServer } from './server';
 
 const RELAY_URL = process.env.RELAY_URL ?? 'ws://localhost:9999/agent';
-const LOG_FILE = '/tmp/agentic-driver-mcp.log';
+import * as path from 'path';
 
-function log(message: string) {
-  const timestamp = new Date().toISOString();
-  const line = `${timestamp} ${message}\n`;
-  process.stderr.write(line);
-  fs.appendFileSync(LOG_FILE, line);
-}
+const LOG_FILE = path.join(LOG_DIR, 'mcp.log');
+
+const logger = createLogger(LOG_FILE, 'mcp');
 
 async function main() {
-  log(`Starting — relay URL: ${RELAY_URL}`);
+  logger.info({ relayUrl: RELAY_URL }, 'startup');
 
-  const relayClient = new RelayClient(RELAY_URL);
-  const server = createMcpServer(relayClient);
+  const relayClient = new RelayClient(RELAY_URL, logger);
+  const server = createMcpServer(relayClient, logger);
   const transport = new StdioServerTransport();
 
   // Connect to stdio first so Claude Code's handshake completes immediately.
   // The relay connection happens in the background; tool calls will return an
   // error if the relay isn't up yet.
-  log('Connecting MCP server to stdio transport...');
+  logger.info('mcp_connecting');
   await server.connect(transport);
-  log('MCP server ready — connecting to relay in background');
+  logger.info('mcp_ready');
 
-  relayClient.connect().then(() => {
-    log('Relay connected');
-  }).catch((error: unknown) => {
-    log(`Relay connection failed: ${error instanceof Error ? error.message : String(error)}`);
+  relayClient.connect().catch((error: unknown) => {
+    logger.error({ message: error instanceof Error ? error.message : String(error) }, 'relay_connect_failed');
   });
 }
 
 main().catch((error) => {
-  log(`Fatal error: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+  logger.error({ message: error instanceof Error ? error.stack ?? error.message : String(error) }, 'fatal');
   process.exit(1);
 });
