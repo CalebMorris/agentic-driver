@@ -321,6 +321,7 @@ describe('MCP Adapter — check_status when relay is not connected', () => {
 const LOGGING_TEST_PORT = 9993;
 
 const PINO_INFO = 30;
+const PINO_WARN = 40;
 const PINO_ERROR = 50;
 
 describe('MCP Adapter — structured logging', () => {
@@ -396,6 +397,28 @@ describe('MCP Adapter — structured logging', () => {
     expect(successLog?.level).toBe(PINO_INFO);
     expect(successLog?.tool).toBe('click');
     expect(typeof successLog?.durationMs).toBe('number');
+  });
+
+  it('logs bundle_uri_fallback warning when the bundled page URL is not parseable', async () => {
+    const { logger, lines } = createTestLogger();
+    mcpClient = await setupClientWithLogger(logger);
+
+    const fakeZip = Buffer.from('PK\x03\x04 fake zip bytes').toString('base64');
+    mockRelayRespond({
+      type: 'result',
+      data: { zip: fakeZip, url: 'not a valid url', fileCount: 1, byteSize: 10 },
+    });
+
+    const toolResult = await callTool(mcpClient, { name: 'bundle', arguments: {} });
+
+    expect(toolResult.isError).toBeFalsy();
+    const resourceBlock = toolResult.content.find((block) => block.type === 'resource');
+    expect(resourceBlock?.resource?.uri).toBe('bundle://site.zip');
+
+    const fallbackLog = lines.find((line) => line.msg === 'bundle_uri_fallback');
+    expect(fallbackLog).toBeDefined();
+    expect(fallbackLog?.level).toBe(PINO_WARN);
+    expect(fallbackLog?.pageUrl).toBe('not a valid url');
   });
 
   it('logs mcp_tool_error with durationMs when relay returns an error', async () => {

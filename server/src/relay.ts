@@ -63,7 +63,8 @@ export function createRelayServer(port: number, logger = pino({ level: 'silent' 
         let parsed: { type?: string; id?: string };
         try {
           parsed = JSON.parse(data.toString());
-        } catch {
+        } catch (error) {
+          logger.warn({ err: error }, 'plugin_message_parse_error');
           return;
         }
 
@@ -119,7 +120,8 @@ export function createRelayServer(port: number, logger = pino({ level: 'silent' 
         let message: { id?: string; type?: string };
         try {
           message = JSON.parse(data.toString());
-        } catch {
+        } catch (error) {
+          logger.warn({ err: error }, 'agent_message_parse_error');
           return;
         }
 

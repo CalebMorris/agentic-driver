@@ -12,6 +12,7 @@
   "scripts": {
     "postinstall": "node scripts/patch-mcp-sdk.js",
     "build": "npm run build --workspaces --if-present",
+    "lint": "eslint .",
     "test": "npm run test --workspaces --if-present",
     "dev": "npm run dev -w server",
     "test:e2e": "npm run test:e2e -w server",
@@ -21,7 +22,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.14",
+    "eslint": "^10.6.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.62.1",
     "vitest": "^2.0.0"
   }
 }

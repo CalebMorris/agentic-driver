@@ -26,12 +26,12 @@ function handleRelayResponse(response: RelayResponse) {
 }
 
 // Derive a descriptive zip filename URI from the bundled page URL.
-function bundleUri(pageUrl: unknown): string {
+function bundleUri(pageUrl: unknown, logger: Logger): string {
   let host = 'site';
   try {
     host = new URL(String(pageUrl)).hostname || 'site';
-  } catch {
-    // Non-URL string — fall back to the generic name.
+  } catch (error) {
+    logger.warn({ pageUrl, err: error }, 'bundle_uri_fallback');
   }
   return `bundle://${host}.zip`;
 }
@@ -162,7 +162,7 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
           },
           {
             type: 'resource' as const,
-            resource: { uri: bundleUri(data.url), mimeType: 'application/zip', blob: data.zip },
+            resource: { uri: bundleUri(data.url, logger), mimeType: 'application/zip', blob: data.zip },
           },
         ],
       };

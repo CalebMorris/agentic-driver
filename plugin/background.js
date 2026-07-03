@@ -62,8 +62,8 @@ function connect() {
     let message;
     try {
       message = JSON.parse(event.data);
-    } catch {
-      console.error('[agentic-driver] Invalid JSON received:', event.data);
+    } catch (error) {
+      console.error('[agentic-driver] ws_message_parse_error', { data: event.data, error: error?.message });
       return;
     }
 
@@ -222,7 +222,8 @@ async function getPinnedTab() {
   if (!pinnedTabId) return null;
   try {
     return await chrome.tabs.get(pinnedTabId);
-  } catch {
+  } catch (error) {
+    console.warn('[agentic-driver] pinned_tab_lookup_failed', { tabId: pinnedTabId, error: error?.message });
     return null;
   }
 }
@@ -354,8 +355,8 @@ async function handleBundle(id) {
       const archivePath = resourceUrlToArchivePath(resourceUrl, seenPaths);
       seenPaths.add(archivePath);
       files.push({ path: archivePath, bytes });
-    } catch {
-      // Skip resources that cannot be fetched.
+    } catch (error) {
+      console.warn('[agentic-driver] bundle_resource_fetch_failed', { url: resourceUrl, error: error?.message });
     }
   }
 
@@ -434,7 +435,8 @@ function resourceUrlToArchivePath(rawUrl, seenPaths) {
     let pathname = parsed.pathname;
     if (pathname === '' || pathname.endsWith('/')) pathname += 'index';
     candidate = `${parsed.hostname}${pathname}`;
-  } catch {
+  } catch (error) {
+    console.warn('[agentic-driver] archive_path_url_parse_failed', { url: rawUrl, error: error?.message });
     candidate = 'resource';
   }
   candidate = candidate.replace(/^\/+/, '').replace(/[^a-zA-Z0-9._/-]/g, '_');

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { WebSocket, WebSocketServer } from 'ws';
+import { WebSocket } from 'ws';
 import { createRelayServer, RelayServer } from './relay';
 
 const TEST_PORT = 9998;
