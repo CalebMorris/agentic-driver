@@ -9,7 +9,13 @@ import { createTestLogger } from './test-helpers';
 
 // callTool returns a complex union type; narrow to the common structured result for assertions.
 type McpToolResult = {
-  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+  content: Array<{
+    type: string;
+    text?: string;
+    data?: string;
+    mimeType?: string;
+    resource?: { uri?: string; mimeType?: string; blob?: string; text?: string };
+  }>;
   isError?: boolean;
 };
 
@@ -171,6 +177,35 @@ describe('MCP Adapter', () => {
     expect(toolResult.content[0].type).toBe('image');
     expect(toolResult.content[0].data).toBe(fakeBase64);
     expect(toolResult.content[0].mimeType).toBe('image/png');
+  });
+
+  // ── bundle ───────────────────────────────────────────────────────────────────
+
+  it('bundle tool sends request and returns a zip resource with metadata', async () => {
+    // Valid base64 — the MCP SDK validates blob data before relaying to the client.
+    const fakeZip = Buffer.from('PK\x03\x04 fake zip bytes').toString('base64');
+
+    const requestSeen = mockRelayRespond({
+      type: 'result',
+      data: { zip: fakeZip, url: 'https://example.com/page', fileCount: 3, byteSize: 1234 },
+    });
+
+    const toolResult = await callTool(mcpClient, { name: 'bundle', arguments: {} });
+
+    const request = await requestSeen;
+
+    expect(request.type).toBe('bundle');
+
+    expect(toolResult.isError).toBeFalsy();
+
+    const textBlock = toolResult.content.find((block) => block.type === 'text');
+    expect(textBlock?.text).toContain('example.com');
+    expect(textBlock?.text).toContain('3');
+
+    const resourceBlock = toolResult.content.find((block) => block.type === 'resource');
+    expect(resourceBlock).toBeDefined();
+    expect(resourceBlock?.resource?.mimeType).toBe('application/zip');
+    expect(resourceBlock?.resource?.blob).toBe(fakeZip);
   });
 
   // ── view_current_site ────────────────────────────────────────────────────────

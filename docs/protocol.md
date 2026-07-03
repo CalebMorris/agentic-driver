@@ -41,9 +41,14 @@ Or with an optional selector to return only a DOM subtree:
 { "id": "5", "type": "view_current_site" }
 ```
 
+### bundle
+```json
+{ "id": "6", "type": "bundle" }
+```
+
 ### handoff
 ```json
-{ "id": "6", "type": "handoff", "reason": "Cloudflare challenge detected" }
+{ "id": "7", "type": "handoff", "reason": "Cloudflare challenge detected" }
 ```
 
 
@@ -60,6 +65,7 @@ Action-specific `data` payloads (all sent after execution completes):
 - `click` → `{ "status": "ok" }`
 - `read_html` → `{ "html": "<html>...</html>" }`
 - `screenshot` → `{ "image": "<base64-png>" }`
+- `bundle` → `{ "zip": "<base64-zip>", "url": "https://example.com", "fileCount": 3, "byteSize": 12345 }` (a DEFLATE-compressed zip: the DOM as `index.html` plus each loaded subresource)
 - `handoff` → `{ "status": "waiting_for_human" }`
 
 ### error

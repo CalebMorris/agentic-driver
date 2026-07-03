@@ -5,6 +5,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as zlib from 'zlib';
 import type { AddressInfo } from 'net';
 import { createRelayServer, RelayServer } from './relay';
 
@@ -93,11 +94,15 @@ test.describe('Plugin E2E', () => {
       '/capture':   '<html><body><h1>Screenshot test</h1></body></html>',
       '/navigate':  '<html><body><h1>Navigation target</h1></body></html>',
       '/view':      '<html><head><title>View Test Page</title></head><body><h1>View</h1></body></html>',
+      '/bundle':    '<html><head><link rel="stylesheet" href="/bundle.css"></head><body><h1>Bundle Me</h1></body></html>',
+      '/bundle.css': 'h1 { color: rebeccapurple; }',
     };
     testServer = http.createServer((req, res) => {
-      const html = routes[req.url ?? '/'] ?? routes['/'];
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(html);
+      const requestPath = req.url ?? '/';
+      const body = routes[requestPath] ?? routes['/'];
+      const contentType = requestPath.endsWith('.css') ? 'text/css' : 'text/html';
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(body);
     });
     await new Promise<void>((resolve) => testServer.listen(0, 'localhost', () => resolve()));
     testServerPort = (testServer.address() as AddressInfo).port;
@@ -334,6 +339,38 @@ test.describe('Plugin E2E', () => {
       expect(typeof image).toBe('string');
       // PNG magic bytes in base64 always start with 'iVBOR'
       expect(image).toMatch(/^iVBOR/);
+    });
+
+    // ── bundle ────────────────────────────────────────────────────────────────
+
+    test('bundle returns a deflate-compressed zip of the DOM and loaded resources', async () => {
+      await drivingPage.goto(`http://localhost:${testServerPort}/bundle`);
+
+      const response = await request(agent, { id: 'b1', type: 'bundle' }) as Record<string, unknown>;
+
+      expect(response.type).toBe('result');
+      const data = response.data as { zip: string; url: string; fileCount: number; byteSize: number };
+      expect(typeof data.zip).toBe('string');
+      // index.html + the stylesheet (there may be more, e.g. favicon)
+      expect(data.fileCount).toBeGreaterThanOrEqual(2);
+
+      const buffer = Buffer.from(data.zip, 'base64');
+      // Local file header magic 'PK\x03\x04'
+      expect([...buffer.subarray(0, 4)]).toEqual([0x50, 0x4b, 0x03, 0x04]);
+
+      // Entry names are stored uncompressed in the headers.
+      const headerText = buffer.toString('latin1');
+      expect(headerText).toContain('index.html');
+      expect(headerText).toContain('bundle.css');
+
+      // Prove DEFLATE round-trips: inflate the first entry (always index.html) and
+      // verify it holds the live DOM.
+      const nameLength = buffer.readUInt16LE(26);
+      const extraLength = buffer.readUInt16LE(28);
+      const compressedSize = buffer.readUInt32LE(18);
+      const dataStart = 30 + nameLength + extraLength;
+      const inflated = zlib.inflateRawSync(buffer.subarray(dataStart, dataStart + compressedSize));
+      expect(inflated.toString('utf8')).toContain('<h1>Bundle Me</h1>');
     });
 
     // ── unknown action ──────────────────────────────────────────────────────

@@ -98,6 +98,20 @@ Response: image/png content block
 - Use to visually verify page state when HTML is ambiguous or the page is canvas/image-heavy.
 - On failure: `CAPTURE_FAILED` — retry once, then use `read_html` as a fallback.
 
+### `bundle()`
+Captures the entire current page — its live DOM plus every subresource the browser has loaded (CSS, JS, images, fonts) — into a single zip archive and returns it.
+
+```
+Response: text summary { url, fileCount, byteSize } + an application/zip resource block (base64 zip)
+```
+
+The archive stores the DOM as `index.html` and each subresource under a URL-derived path (`<hostname>/<path>`), DEFLATE-compressed.
+
+- Use to snapshot or archive a site for offline analysis, or to hand a complete captured page to a downstream step.
+- Only subresources the browser actually loaded for the current page are included; a resource that cannot be fetched (opaque cross-origin response, 404) is silently omitted rather than failing the bundle.
+- The archive can be large — prefer `read_html` (optionally scoped) or `screenshot` when you only need part of the page.
+- On failure: `UNKNOWN` — retry once; if the page has no pinned tab, re-check `check_status`.
+
 ### `handoff(reason: string)`
 Pauses agent control and notifies the user that human intervention is needed. **Blocks until the human clicks "Done" in the extension popup.**
 
