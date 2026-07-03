@@ -2,7 +2,7 @@
 
 Your agent hits a Cloudflare wall. Agentic Driver lets you step in, solve it, and hand control back — no workflow restart, no hacks.
 
-It's a Chrome/Brave extension paired with a WebSocket relay and an MCP adapter. Claude gets real browser tools (`navigate`, `click`, `read_html`, `screenshot`). When the agent needs a human — bot detection, 2FA, anything requiring judgment — it calls `handoff`, you take the wheel, and it resumes exactly where it left off.
+It's a Chrome/Brave extension paired with a WebSocket relay and an MCP adapter. Claude gets real browser tools (`navigate`, `click`, `read_html`, `screenshot`, `bundle`). When the agent needs a human — bot detection, 2FA, anything requiring judgment — it calls `handoff`, you take the wheel, and it resumes exactly where it left off.
 
 ## Quickstart
 
@@ -33,7 +33,7 @@ The plugin (`plugin/`) is plain JavaScript — no build step required.
 npm run install:mcp
 ```
 
-This registers the compiled adapter with `claude mcp add` at user scope, so the browser control tools (`navigate`, `click`, `read_html`, `screenshot`, `view_current_site`, `handoff`) are available in Claude CLI sessions from any directory, not just this repo.
+This registers the compiled adapter with `claude mcp add` at user scope, so the browser control tools (`navigate`, `click`, `read_html`, `screenshot`, `view_current_site`, `bundle`, `handoff`) are available in Claude CLI sessions from any directory, not just this repo.
 
 ### 4. Install the drive skill
 

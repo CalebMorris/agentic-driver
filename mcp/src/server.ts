@@ -25,6 +25,17 @@ function handleRelayResponse(response: RelayResponse) {
   return textResult(response.data);
 }
 
+// Derive a descriptive zip filename URI from the bundled page URL.
+function bundleUri(pageUrl: unknown, logger: Logger): string {
+  let host = 'site';
+  try {
+    host = new URL(String(pageUrl)).hostname || 'site';
+  } catch (error) {
+    logger.warn({ pageUrl, err: error }, 'bundle_uri_fallback');
+  }
+  return `bundle://${host}.zip`;
+}
+
 // Patch registerTool before any tools are registered so logging is injected
 // into every handler automatically — no per-tool boilerplate required.
 // registerTool has complex generics; we cast to avoid fighting them at the
@@ -127,6 +138,33 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
       const data = response.data as { image: string };
       return {
         content: [{ type: 'image' as const, data: data.image, mimeType: 'image/png' }],
+      };
+    }
+  );
+
+  server.registerTool(
+    'bundle',
+    {
+      description:
+        'Bundle the entire current page — its live DOM plus every subresource the browser has loaded (CSS, JS, images, fonts) — into a single zip archive and return it. Use to snapshot or archive a site for offline analysis. The archive can be large.',
+    },
+    async () => {
+      const response = await relayClient.send({ type: 'bundle' });
+      if (response.type === 'error') {
+        return errorResult(response.code, response.message);
+      }
+      const data = response.data as { zip: string; url: string; fileCount: number; byteSize: number };
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ url: data.url, fileCount: data.fileCount, byteSize: data.byteSize }),
+          },
+          {
+            type: 'resource' as const,
+            resource: { uri: bundleUri(data.url, logger), mimeType: 'application/zip', blob: data.zip },
+          },
+        ],
       };
     }
   );

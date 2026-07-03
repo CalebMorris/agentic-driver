@@ -13,6 +13,7 @@ Gotchas for `background.js` (MV3 service worker). Each section is self-contained
 | 7 | Post-pin handlers target the wrong tab or capture the wrong screenshot |
 | 8 | Relay acts on stale `drivingEnabled=true` after plugin disconnect |
 | 9 | How to show a badge on the extension icon and clear it |
+| 10 | Collecting a page's subresources hits CORS from the content script |
 
 
 ## 1. `waitForTabComplete` — register listener before navigation; no early-complete check
@@ -194,3 +195,27 @@ chrome.action.setBadgeText({ text: '' }); // empty string removes the badge
 - `color` can be a hex string or an `[R, G, B, A]` array.
 - Neither call requires `await` — they are fire-and-forget.
 - Both calls are on `chrome.action`, not `chrome.browserAction` (MV2 — do not use).
+
+
+## 10. Fetch subresources from the background worker, not the content script
+
+**Trap:** To archive a page's loaded files, the obvious move is to `fetch()` each resource from the content script (it already knows the page's origin). But the content script runs in the page's origin context — cross-origin subresources (a CDN stylesheet, a third-party image) fail CORS, and `mode: 'no-cors'` yields an opaque response whose body you can't read.
+
+**Fix:** Split the work. The content script only *enumerates* — `performance.getEntriesByType('resource')` lists every subresource the browser loaded for the current document (it resets per navigation, so it reflects only the current page). The background service worker *fetches* — it holds `<all_urls>` host permission (`manifest.json`), so its `fetch()` bypasses page CORS entirely and can read any response body.
+
+```javascript
+// content.js — enumerate only
+const resources = [...new Set(performance.getEntriesByType('resource').map((e) => e.name))];
+
+// background.js — fetch with host permissions (no CORS)
+async function fetchResourceBytes(url) {
+  if (!/^https?:/i.test(url)) return null;      // skip data:, blob:, extension URLs
+  const response = await fetch(url);
+  if (!response.ok) return null;
+  return new Uint8Array(await response.arrayBuffer());
+}
+```
+
+Tolerate per-resource failures (skip and continue) — a single 404 or opaque response should not fail the whole operation.
+
+**Bonus — zipping in the worker:** the service worker has `CompressionStream('deflate-raw')` built in, so you can produce real DEFLATE-compressed zips (method 8) with no library. See `buildZipArchive`/`deflateRaw` in `background.js`.

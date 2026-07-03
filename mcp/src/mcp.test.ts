@@ -9,7 +9,13 @@ import { createTestLogger } from './test-helpers';
 
 // callTool returns a complex union type; narrow to the common structured result for assertions.
 type McpToolResult = {
-  content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+  content: Array<{
+    type: string;
+    text?: string;
+    data?: string;
+    mimeType?: string;
+    resource?: { uri?: string; mimeType?: string; blob?: string; text?: string };
+  }>;
   isError?: boolean;
 };
 
@@ -173,6 +179,35 @@ describe('MCP Adapter', () => {
     expect(toolResult.content[0].mimeType).toBe('image/png');
   });
 
+  // ── bundle ───────────────────────────────────────────────────────────────────
+
+  it('bundle tool sends request and returns a zip resource with metadata', async () => {
+    // Valid base64 — the MCP SDK validates blob data before relaying to the client.
+    const fakeZip = Buffer.from('PK\x03\x04 fake zip bytes').toString('base64');
+
+    const requestSeen = mockRelayRespond({
+      type: 'result',
+      data: { zip: fakeZip, url: 'https://example.com/page', fileCount: 3, byteSize: 1234 },
+    });
+
+    const toolResult = await callTool(mcpClient, { name: 'bundle', arguments: {} });
+
+    const request = await requestSeen;
+
+    expect(request.type).toBe('bundle');
+
+    expect(toolResult.isError).toBeFalsy();
+
+    const textBlock = toolResult.content.find((block) => block.type === 'text');
+    expect(textBlock?.text).toContain('example.com');
+    expect(textBlock?.text).toContain('3');
+
+    const resourceBlock = toolResult.content.find((block) => block.type === 'resource');
+    expect(resourceBlock).toBeDefined();
+    expect(resourceBlock?.resource?.mimeType).toBe('application/zip');
+    expect(resourceBlock?.resource?.blob).toBe(fakeZip);
+  });
+
   // ── view_current_site ────────────────────────────────────────────────────────
 
   it('view_current_site tool sends correct WS request and returns result', async () => {
@@ -286,6 +321,7 @@ describe('MCP Adapter — check_status when relay is not connected', () => {
 const LOGGING_TEST_PORT = 9993;
 
 const PINO_INFO = 30;
+const PINO_WARN = 40;
 const PINO_ERROR = 50;
 
 describe('MCP Adapter — structured logging', () => {
@@ -361,6 +397,28 @@ describe('MCP Adapter — structured logging', () => {
     expect(successLog?.level).toBe(PINO_INFO);
     expect(successLog?.tool).toBe('click');
     expect(typeof successLog?.durationMs).toBe('number');
+  });
+
+  it('logs bundle_uri_fallback warning when the bundled page URL is not parseable', async () => {
+    const { logger, lines } = createTestLogger();
+    mcpClient = await setupClientWithLogger(logger);
+
+    const fakeZip = Buffer.from('PK\x03\x04 fake zip bytes').toString('base64');
+    mockRelayRespond({
+      type: 'result',
+      data: { zip: fakeZip, url: 'not a valid url', fileCount: 1, byteSize: 10 },
+    });
+
+    const toolResult = await callTool(mcpClient, { name: 'bundle', arguments: {} });
+
+    expect(toolResult.isError).toBeFalsy();
+    const resourceBlock = toolResult.content.find((block) => block.type === 'resource');
+    expect(resourceBlock?.resource?.uri).toBe('bundle://site.zip');
+
+    const fallbackLog = lines.find((line) => line.msg === 'bundle_uri_fallback');
+    expect(fallbackLog).toBeDefined();
+    expect(fallbackLog?.level).toBe(PINO_WARN);
+    expect(fallbackLog?.pageUrl).toBe('not a valid url');
   });
 
   it('logs mcp_tool_error with durationMs when relay returns an error', async () => {

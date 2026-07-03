@@ -8,7 +8,8 @@ async function render() {
   let status;
   try {
     status = await chrome.runtime.sendMessage({ type: 'get_status' });
-  } catch {
+  } catch (error) {
+    console.warn('[agentic-driver] popup_status_check_failed', { error: error?.message });
     statusEl.textContent = 'Service worker not running.';
     statusEl.className = 'muted';
     button.disabled = true;
