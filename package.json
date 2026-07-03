@@ -16,7 +16,7 @@
     "dev": "npm run dev -w server",
     "test:e2e": "npm run test:e2e -w server",
     "install:e2e": "npm run install:e2e -w server",
-    "install:mcp": "claude mcp remove agentic-driver -s local 2>/dev/null || true && claude mcp add agentic-driver -s local -- node \"$(pwd)/mcp/dist/index.js\""
+    "install:mcp": "claude mcp remove agentic-driver -s local 2>/dev/null || true && claude mcp remove agentic-driver -s user 2>/dev/null || true && claude mcp add agentic-driver -s user -- node \"$(pwd)/mcp/dist/index.js\""
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

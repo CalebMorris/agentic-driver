@@ -9,6 +9,10 @@ Reference these docs before working in the relevant areas:
 - [Relay Server](agentic-docs/relay-server.md) — pitfalls and patterns for `server/src/relay.ts` (state machine, multi-step protocol, suppression, disconnect handling)
 - [npm Workspaces](agentic-docs/npm-workspaces.md) — workspace structure, hoisting, shared devDeps, tsconfig inheritance, canonical layout
 
+## MCP Registration Scope
+
+The `install:mcp` script must register with `claude mcp add -s user` (user scope). Local scope (`-s local`) confines the server to this repo's directory, and sessions in other repos won't see the tools — the whole point is driving the browser from anywhere.
+
 ## Maintenance Rule — MCP Tools → Drive Skill
 
 **Any time `mcp/src/server.ts` is changed** (tool added, removed, renamed, or its behaviour/error codes changed), **update `skills/drive/SKILL.md`** to match:
