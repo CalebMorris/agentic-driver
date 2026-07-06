@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createRelayServer } from './relay';
+import { createSigintHandler } from './sigint';
 
 const PORT = 9999;
 const LOG_DIR = path.join(process.env.XDG_STATE_HOME ?? path.join(os.homedir(), '.local', 'state'), 'agentic-driver');
@@ -30,4 +31,13 @@ async function shutdown() {
 }
 
 process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on(
+  'SIGINT',
+  createSigintHandler({
+    gracefulShutdown: () => void shutdown(),
+    panicExit: () => {
+      logger.info('relay_panic_exit');
+      process.exit(130);
+    },
+  })
+);
