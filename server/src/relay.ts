@@ -73,11 +73,17 @@ export function createRelayServer(port: number, logger = pino({ level: 'silent' 
       logger.info('plugin_connected');
 
       socket.on('message', (data: Buffer) => {
-        let parsed: { type?: string; id?: string };
+        let parsed: { type?: string; id?: string; level?: string; event?: string; context?: Record<string, unknown> };
         try {
           parsed = JSON.parse(data.toString());
         } catch (error) {
           logger.warn({ err: error }, 'plugin_message_parse_error');
+          return;
+        }
+
+        if (parsed.type === 'log') {
+          const level = parsed.level === 'error' || parsed.level === 'warn' ? parsed.level : 'info';
+          logger[level]({ source: 'plugin', ...parsed.context }, parsed.event ?? 'plugin_log');
           return;
         }
 

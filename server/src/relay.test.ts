@@ -436,6 +436,56 @@ describe('createRelayServer logging', () => {
     await closeClient(agentSocket);
   });
 
+  it('captures plugin log messages into the server log at the given level', async () => {
+    const pluginSocket = await connectClient('/plugin', LOG_TEST_PORT);
+
+    pluginSocket.send(JSON.stringify({
+      type: 'log',
+      level: 'error',
+      event: 'capture_failed',
+      context: { tabId: 12, code: 'CAPTURE_FAILED', message: 'image readback failed' },
+    }));
+    await waitForRelayProcess();
+
+    const entry = entries.find((e) => e.msg === 'capture_failed');
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe(50);
+    expect(entry?.source).toBe('plugin');
+    expect(entry?.tabId).toBe(12);
+    expect(entry?.code).toBe('CAPTURE_FAILED');
+
+    await closeClient(pluginSocket);
+  });
+
+  it('does not forward plugin log messages to the agent', async () => {
+    const pluginSocket = await connectClient('/plugin', LOG_TEST_PORT);
+    const agentSocket = await connectClient('/agent', LOG_TEST_PORT);
+
+    let agentReceivedMessage = false;
+    agentSocket.on('message', () => { agentReceivedMessage = true; });
+
+    pluginSocket.send(JSON.stringify({ type: 'log', level: 'warn', event: 'bundle_resource_fetch_failed', context: {} }));
+    await waitForRelayProcess();
+
+    expect(agentReceivedMessage).toBe(false);
+
+    await closeClient(pluginSocket);
+    await closeClient(agentSocket);
+  });
+
+  it('captures a plugin log message with an unknown level as info', async () => {
+    const pluginSocket = await connectClient('/plugin', LOG_TEST_PORT);
+
+    pluginSocket.send(JSON.stringify({ type: 'log', level: 'fatal', event: 'strange_event' }));
+    await waitForRelayProcess();
+
+    const entry = entries.find((e) => e.msg === 'strange_event');
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe(30);
+
+    await closeClient(pluginSocket);
+  });
+
   it('logs an error when the WebSocketServer emits an error', async () => {
     const capture = createCapturingLogger();
     const conflicting = createRelayServer(LOG_TEST_PORT, capture.logger);

@@ -63,7 +63,7 @@ function connect() {
     try {
       message = JSON.parse(event.data);
     } catch (error) {
-      console.error('[agentic-driver] ws_message_parse_error', { data: event.data, error: error?.message });
+      logToRelay('error', 'ws_message_parse_error', { data: String(event.data).slice(0, 200), error: error?.message });
       return;
     }
 
@@ -110,6 +110,16 @@ function sendControlMessage(payload) {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(payload));
   }
+}
+
+// Log to the console and mirror to the relay as a 'log' message, which the
+// relay writes to relay.log server-side without forwarding to the agent.
+// The relay send silently no-ops when the socket is down, so this is safe to
+// call from connection-failure paths.
+function logToRelay(level, event, context = {}) {
+  const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+  consoleFn(`[agentic-driver] ${event}`, context);
+  sendControlMessage({ type: 'log', level, event, context });
 }
 
 function updateActionIcon(isActive) {
@@ -212,7 +222,7 @@ async function handleMessage(message) {
         return errorResponse(id, 'UNKNOWN', `Unknown action type: ${type}`);
     }
   } catch (error) {
-    return errorResponse(id, 'UNKNOWN', error.message ?? 'Unexpected error');
+    return errorResponse(id, 'UNKNOWN', error.message ?? 'Unexpected error', { action: type, stack: error.stack });
   }
 }
 
@@ -223,7 +233,7 @@ async function getPinnedTab() {
   try {
     return await chrome.tabs.get(pinnedTabId);
   } catch (error) {
-    console.warn('[agentic-driver] pinned_tab_lookup_failed', { tabId: pinnedTabId, error: error?.message });
+    logToRelay('warn', 'pinned_tab_lookup_failed', { tabId: pinnedTabId, error: error?.message });
     return null;
   }
 }
@@ -321,7 +331,15 @@ async function handleScreenshot(id) {
     const base64Image = dataUrl.replace(/^data:image\/png;base64,/, '');
     return { id, type: 'result', data: { image: base64Image } };
   } catch (error) {
-    return errorResponse(id, 'CAPTURE_FAILED', error.message ?? 'Screenshot failed');
+    // tabActive/windowId reveal the usual cause: the pinned tab is not the
+    // active tab of a visible window, so Chrome refuses the capture.
+    return errorResponse(id, 'CAPTURE_FAILED', error.message ?? 'Screenshot failed', {
+      action: 'screenshot',
+      tabId: tab.id,
+      windowId: tab.windowId,
+      tabActive: tab.active,
+      tabStatus: tab.status,
+    });
   }
 }
 
@@ -356,7 +374,7 @@ async function handleBundle(id) {
       seenPaths.add(archivePath);
       files.push({ path: archivePath, bytes });
     } catch (error) {
-      console.warn('[agentic-driver] bundle_resource_fetch_failed', { url: resourceUrl, error: error?.message });
+      logToRelay('warn', 'bundle_resource_fetch_failed', { url: resourceUrl, error: error?.message });
     }
   }
 
@@ -410,7 +428,8 @@ function waitForTabComplete(tabId) {
   });
 }
 
-function errorResponse(id, code, message) {
+function errorResponse(id, code, message, context = {}) {
+  logToRelay('error', 'action_error', { id, code, message, ...context });
   return { id, type: 'error', code, message };
 }
 
@@ -436,7 +455,7 @@ function resourceUrlToArchivePath(rawUrl, seenPaths) {
     if (pathname === '' || pathname.endsWith('/')) pathname += 'index';
     candidate = `${parsed.hostname}${pathname}`;
   } catch (error) {
-    console.warn('[agentic-driver] archive_path_url_parse_failed', { url: rawUrl, error: error?.message });
+    logToRelay('warn', 'archive_path_url_parse_failed', { url: rawUrl, error: error?.message });
     candidate = 'resource';
   }
   candidate = candidate.replace(/^\/+/, '').replace(/[^a-zA-Z0-9._/-]/g, '_');
