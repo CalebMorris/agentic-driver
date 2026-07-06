@@ -126,15 +126,10 @@ socket.on('close', () => {
   pluginSocket = null;
   drivingEnabled = false;
   if (pendingHandoffId !== null) {
-    sendToAgent({
-      id: pendingHandoffId,
-      type: 'error',
-      code: 'UNKNOWN',
-      message: 'Plugin disconnected during handoff',
-    });
+    sendErrorToAgent(pendingHandoffId, 'UNKNOWN', 'Plugin disconnected during handoff');
     pendingHandoffId = null;
   }
-  console.log('[relay] Plugin disconnected');
+  logger.info('plugin_disconnected');
 });
 ```
 

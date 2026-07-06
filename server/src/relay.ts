@@ -51,8 +51,21 @@ export function createRelayServer(port: number, logger = pino({ level: 'silent' 
     }
   }
 
+  function sendErrorToAgent(id: string, code: string, message: string): void {
+    logger.warn({ id, code, message }, 'agent_error_sent');
+    sendToAgent({ id, type: 'error', code, message });
+  }
+
+  wss.on('error', (error: Error) => {
+    logger.error({ err: error }, 'wss_error');
+  });
+
   wss.on('connection', (socket: WebSocket, request: IncomingMessage) => {
     const clientPath = request.url;
+
+    socket.on('error', (error: Error) => {
+      logger.error({ err: error, clientPath }, 'socket_error');
+    });
 
     if (clientPath === '/plugin') {
       pluginSocket = socket;
@@ -101,12 +114,7 @@ export function createRelayServer(port: number, logger = pino({ level: 'silent' 
         drivingEnabled = false;
         pluginDisconnectWaiters.splice(0).forEach(fn => fn());
         if (pendingHandoffId !== null) {
-          sendToAgent({
-            id: pendingHandoffId,
-            type: 'error',
-            code: 'UNKNOWN',
-            message: 'Plugin disconnected during handoff',
-          });
+          sendErrorToAgent(pendingHandoffId, 'UNKNOWN', 'Plugin disconnected during handoff');
           pendingHandoffId = null;
         }
         logger.info('plugin_disconnected');
@@ -137,12 +145,7 @@ export function createRelayServer(port: number, logger = pino({ level: 'silent' 
         }
 
         if (!drivingEnabled) {
-          sendToAgent({
-            id: message.id ?? '',
-            type: 'error',
-            code: 'DRIVING_DISABLED',
-            message: 'Driving has not been enabled via the plugin UI',
-          });
+          sendErrorToAgent(message.id ?? '', 'DRIVING_DISABLED', 'Driving has not been enabled via the plugin UI');
           return;
         }
 
@@ -153,12 +156,7 @@ export function createRelayServer(port: number, logger = pino({ level: 'silent' 
         if (pluginSocket?.readyState === WebSocket.OPEN) {
           pluginSocket.send(data.toString());
         } else {
-          sendToAgent({
-            id: message.id ?? '',
-            type: 'error',
-            code: 'UNKNOWN',
-            message: 'Plugin is not connected',
-          });
+          sendErrorToAgent(message.id ?? '', 'UNKNOWN', 'Plugin is not connected');
         }
       });
 

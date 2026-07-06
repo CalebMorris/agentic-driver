@@ -1,15 +1,26 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
+import pino from 'pino';
 import { createRelayServer, RelayServer } from './relay';
 
 const TEST_PORT = 9998;
 
-function connectClient(path: string): Promise<WebSocket> {
+function connectClient(path: string, port = TEST_PORT): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://localhost:${TEST_PORT}${path}`);
+    const socket = new WebSocket(`ws://localhost:${port}${path}`);
     socket.on('open', () => resolve(socket));
     socket.on('error', reject);
   });
+}
+
+function createCapturingLogger(): { logger: pino.Logger; entries: Array<Record<string, unknown>> } {
+  const entries: Array<Record<string, unknown>> = [];
+  const stream = {
+    write(line: string) {
+      entries.push(JSON.parse(line));
+    },
+  };
+  return { logger: pino({ level: 'info' }, stream), entries };
 }
 
 function waitForMessage(socket: WebSocket): Promise<unknown> {
@@ -351,5 +362,89 @@ describe('createRelayServer', () => {
     expect(received.code).toBe('UNKNOWN');
 
     await closeClient(agentSocket);
+  });
+});
+
+describe('createRelayServer logging', () => {
+  const LOG_TEST_PORT = 9997;
+  let relay: RelayServer;
+  let entries: Array<Record<string, unknown>>;
+
+  beforeEach(async () => {
+    const capture = createCapturingLogger();
+    entries = capture.entries;
+    relay = createRelayServer(LOG_TEST_PORT, capture.logger);
+    await new Promise<void>((resolve) => {
+      if (relay.wss.address()) resolve();
+      else relay.wss.once('listening', resolve);
+    });
+  });
+
+  afterEach(async () => {
+    if (relay.wss.address() !== null) {
+      await new Promise<void>((resolve) => relay.wss.close(() => resolve()));
+    }
+  });
+
+  it('logs a warn when sending DRIVING_DISABLED error to the agent', async () => {
+    const agentSocket = await connectClient('/agent', LOG_TEST_PORT);
+
+    const receivePromise = waitForMessage(agentSocket);
+    agentSocket.send(JSON.stringify({ id: '30', type: 'read_html' }));
+    await receivePromise;
+
+    const entry = entries.find((e) => e.msg === 'agent_error_sent');
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe(40);
+    expect(entry?.code).toBe('DRIVING_DISABLED');
+
+    await closeClient(agentSocket);
+  });
+
+  it('logs a warn when plugin is not connected for a driving-enabled request', async () => {
+    const pluginSocket = await connectClient('/plugin', LOG_TEST_PORT);
+    const agentSocket = await connectClient('/agent', LOG_TEST_PORT);
+
+    pluginSocket.send(JSON.stringify({ type: 'driving_enabled', tabId: 1 }));
+    await waitForRelayProcess();
+
+    agentSocket.send(JSON.stringify({ id: '31', type: 'handoff', reason: 'Test' }));
+    await waitForRelayProcess();
+
+    const receivePromise = waitForMessage(agentSocket);
+    await closeClient(pluginSocket);
+    await receivePromise;
+
+    const entry = entries.find((e) => e.msg === 'agent_error_sent' && e.code === 'UNKNOWN');
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe(40);
+
+    await closeClient(agentSocket);
+  });
+
+  it('logs an error when a client socket emits an error', async () => {
+    const agentSocket = await connectClient('/agent', LOG_TEST_PORT);
+
+    const serverSideSocket = Array.from(relay.wss.clients)[0];
+    serverSideSocket.emit('error', new Error('boom'));
+
+    const entry = entries.find((e) => e.msg === 'socket_error');
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe(50);
+    expect(entry?.clientPath).toBe('/agent');
+
+    await closeClient(agentSocket);
+  });
+
+  it('logs an error when the WebSocketServer emits an error', async () => {
+    const capture = createCapturingLogger();
+    const conflicting = createRelayServer(LOG_TEST_PORT, capture.logger);
+    await waitForRelayProcess();
+
+    const entry = capture.entries.find((e) => e.msg === 'wss_error');
+    expect(entry).toBeDefined();
+    expect(entry?.level).toBe(50);
+
+    await new Promise<void>((resolve) => conflicting.wss.close(() => resolve()));
   });
 });
