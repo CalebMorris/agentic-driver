@@ -14,6 +14,7 @@ Gotchas for `background.js` (MV3 service worker). Each section is self-contained
 | 8 | Relay acts on stale `drivingEnabled=true` after plugin disconnect |
 | 9 | How to show a badge on the extension icon and clear it |
 | 10 | Collecting a page's subresources hits CORS from the content script |
+| 11 | `captureVisibleTab` fails with "image readback failed" on a loaded, active tab |
 
 
 ## 1. `waitForTabComplete` — register listener before navigation; no early-complete check
@@ -219,3 +220,28 @@ async function fetchResourceBytes(url) {
 Tolerate per-resource failures (skip and continue) — a single 404 or opaque response should not fail the whole operation.
 
 **Bonus — zipping in the worker:** the service worker has `CompressionStream('deflate-raw')` built in, so you can produce real DEFLATE-compressed zips (method 8) with no library. See `buildZipArchive`/`deflateRaw` in `background.js`.
+
+
+## 11. `captureVisibleTab` fails with "image readback failed" on a loaded, active tab
+
+**Trap:** `tab.status === 'complete'` and `tab.active === true` do not mean the tab is capturable. `captureVisibleTab` reads back the compositor's last frame, and fails with `Failed to capture tab: image readback failed` when no readable frame exists:
+
+- Right after navigation — the `load` event fires before the compositor produces a frame. WebGL-heavy pages (Figma, maps, games) have the longest gap because the canvas recreates the GPU surface.
+- While the window is fully occluded or minimized — the compositor is paused, so every capture fails until the window is visible again, no matter how long you wait.
+
+**Fix (transient case):** wait for a painted frame after load, and retry the capture. Two nested `requestAnimationFrame` callbacks guarantee at least one rendered frame; rAF never fires in occluded windows, so race it against a timeout. See `waitForFirstPaint` and the retry loop in `handleScreenshot` in `background.js`.
+
+```javascript
+const results = await chrome.scripting.executeScript({
+  target: { tabId },
+  func: () => new Promise((resolve) => {
+    setTimeout(() => resolve(false), 5000);
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+  }),
+});
+const painted = results[0]?.result === true;
+```
+
+**Quota constraint:** `captureVisibleTab` is limited to 2 calls per second (`MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND`). Retry delays must stay above 500ms, or the retry itself fails on the quota instead of the original error.
+
+**Persistent case:** if retries keep failing, the window is not visible on screen. This cannot be fixed from the worker — surface it to the caller (include `tab.active` / `tab.status` in the error context to distinguish it from the wrong-tab case in § 7).

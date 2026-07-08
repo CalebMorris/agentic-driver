@@ -61,7 +61,7 @@ Or with an optional selector to return only a DOM subtree:
 
 Action-specific `data` payloads (all sent after execution completes):
 - `view_current_site` → `{ "id": 42, "url": "https://example.com", "title": "Example", "status": "complete", "active": true, "faviconUrl": "https://example.com/favicon.ico" }`
-- `navigate` → `{ "url": "https://example.com", "status": "complete" }` (sent after tab finishes loading)
+- `navigate` → `{ "url": "https://example.com", "status": "complete", "firstPaint": true }` (sent after tab finishes loading; `firstPaint` is `true` once the compositor has rendered at least one frame of the new page — it does NOT mean dynamic content is ready. `false` means no frame was painted within 5s, e.g. the window is occluded or script injection was refused, and an immediate screenshot may fail)
 - `click` → `{ "status": "ok" }`
 - `read_html` → `{ "html": "<html>...</html>" }`
 - `screenshot` → `{ "image": "<base64-png>" }`
@@ -83,7 +83,7 @@ Action-specific `data` payloads (all sent after execution completes):
 |---|---|
 | `ELEMENT_NOT_FOUND` | CSS selector matched nothing |
 | `NAVIGATION_FAILED` | Tab could not load the URL |
-| `CAPTURE_FAILED` | Screenshot could not be taken |
+| `CAPTURE_FAILED` | Screenshot could not be taken (already retried 3× internally — the failure is persistent, e.g. the window is occluded, minimized, or the pinned tab is not the active tab) |
 | `DRIVING_DISABLED` | Driving has not been enabled via the plugin UI |
 | `UNKNOWN` | Unexpected error |
 

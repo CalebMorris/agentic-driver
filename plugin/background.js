@@ -272,8 +272,9 @@ async function handleNavigate(id, message) {
     await chrome.tabs.update(tab.id, { url });
     await loadComplete;
 
+    const firstPaint = await waitForFirstPaint(tab.id);
     const updatedTab = await chrome.tabs.get(tab.id);
-    return { id, type: 'result', data: { url: updatedTab?.url ?? url, status: 'complete' } };
+    return { id, type: 'result', data: { url: updatedTab?.url ?? url, status: 'complete', firstPaint } };
   } catch (error) {
     return errorResponse(id, 'NAVIGATION_FAILED', error.message ?? 'Navigation failed');
   }
@@ -320,27 +321,43 @@ async function handleReadHtml(id, message) {
   return { id, type: 'result', data: { html: result.html } };
 }
 
+// captureVisibleTab fails transiently with "image readback failed" when the
+// compositor has no readable frame yet — e.g. a WebGL canvas spinning up right
+// after navigation. captureVisibleTab is quota-limited to 2 calls/sec, so the
+// retry delay must stay above 500ms or retries fail on the quota instead.
+const CAPTURE_ATTEMPTS = 3;
+const CAPTURE_RETRY_DELAY_MS = 600;
+
 async function handleScreenshot(id) {
   const tab = await getPinnedTab();
   if (!tab) {
     return errorResponse(id, 'UNKNOWN', 'No tab is pinned for driving');
   }
-  try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-    // Strip the "data:image/png;base64," prefix
-    const base64Image = dataUrl.replace(/^data:image\/png;base64,/, '');
-    return { id, type: 'result', data: { image: base64Image } };
-  } catch (error) {
-    // tabActive/windowId reveal the usual cause: the pinned tab is not the
-    // active tab of a visible window, so Chrome refuses the capture.
-    return errorResponse(id, 'CAPTURE_FAILED', error.message ?? 'Screenshot failed', {
-      action: 'screenshot',
-      tabId: tab.id,
-      windowId: tab.windowId,
-      tabActive: tab.active,
-      tabStatus: tab.status,
-    });
+  let lastError;
+  for (let attempt = 1; attempt <= CAPTURE_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      await new Promise((resolve) => setTimeout(resolve, CAPTURE_RETRY_DELAY_MS * (attempt - 1)));
+    }
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      // Strip the "data:image/png;base64," prefix
+      const base64Image = dataUrl.replace(/^data:image\/png;base64,/, '');
+      return { id, type: 'result', data: { image: base64Image } };
+    } catch (error) {
+      lastError = error;
+    }
   }
+  // tabActive/windowId reveal a common persistent cause: the pinned tab is not
+  // the active tab of a visible window, so Chrome refuses the capture. A fully
+  // occluded or minimized window fails the same way even with tabActive=true.
+  return errorResponse(id, 'CAPTURE_FAILED', lastError.message ?? 'Screenshot failed', {
+    action: 'screenshot',
+    attempts: CAPTURE_ATTEMPTS,
+    tabId: tab.id,
+    windowId: tab.windowId,
+    tabActive: tab.active,
+    tabStatus: tab.status,
+  });
 }
 
 async function handleBundle(id) {
@@ -426,6 +443,27 @@ function waitForTabComplete(tabId) {
     // No early-complete check: the tab is always 'complete' before navigation.
     chrome.tabs.onUpdated.addListener(onUpdated);
   });
+}
+
+// tab status 'complete' fires on the document load event, before the compositor
+// has produced a frame — capturing at that point fails with "image readback
+// failed" (WebGL-heavy pages have the longest gap). Two nested rAF callbacks
+// guarantee at least one full frame was rendered. rAF never fires in occluded
+// or minimized windows, so a timeout resolves false instead of hanging navigate.
+async function waitForFirstPaint(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => new Promise((resolve) => {
+        setTimeout(() => resolve(false), 5000);
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+      }),
+    });
+    return results[0]?.result === true;
+  } catch {
+    // Injection refused (chrome:// and similar) — the load itself completed.
+    return false;
+  }
 }
 
 function errorResponse(id, code, message, context = {}) {
