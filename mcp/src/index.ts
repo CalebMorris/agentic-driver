@@ -13,7 +13,7 @@ const logger = createLogger(LOG_FILE, 'mcp');
 async function main() {
   logger.info({ relayUrl: RELAY_URL }, 'startup');
 
-  const relayClient = new RelayClient(RELAY_URL, logger);
+  const relayClient = new RelayClient(RELAY_URL, { logger });
   const server = createMcpServer(relayClient, logger);
   const transport = new StdioServerTransport();
 

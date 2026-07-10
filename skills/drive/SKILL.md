@@ -36,6 +36,8 @@ Call `view_current_site` to get the current URL and title, then confirm the acti
 
 All tools communicate via the relay WebSocket. Every call blocks until the action completes.
 
+Every tool except `handoff` accepts an optional `timeoutMs` parameter overriding the default 10-second response timeout for that single call. If the relay does not respond within the window, the call returns a `RELAY_TIMEOUT` error. Pass a larger `timeoutMs` when an operation is expected to be slow — e.g. `navigate` to a heavy page, or `bundle` on a resource-rich site. `handoff` has no timeout: it blocks until the human finishes.
+
 ### `check_status()`
 Returns the current connection state of the entire driver stack. Always call this first.
 
@@ -190,6 +192,7 @@ If `handoff` returns an error with `UNKNOWN` and the message contains "Plugin di
 | `ELEMENT_NOT_FOUND` | CSS selector matched nothing | Re-read HTML, fix selector, retry. After 2 failures → handoff. |
 | `NAVIGATION_FAILED` | Tab could not load the URL | Check URL validity, retry once. If bot-detected → handoff. |
 | `CAPTURE_FAILED` | Screenshot could not be taken (plugin already retried 3×) | Window is likely occluded/minimized — ask the user to make it visible, or fall back to `read_html`. |
+| `RELAY_TIMEOUT` | Relay did not respond within the timeout window (default 10 s; relay or extension hung) | Call `check_status` to verify connectivity, then retry once — pass a larger `timeoutMs` if the operation is legitimately slow. If repeated → handoff. `handoff` itself has no timeout and blocks indefinitely. |
 | `UNKNOWN` | Unexpected plugin-side error | Retry once; if repeated → handoff with a descriptive reason. |
 
 **Never loop indefinitely on errors.** If the same error recurs after one retry, either change approach or request a handoff.

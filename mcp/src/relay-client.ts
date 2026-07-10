@@ -2,19 +2,33 @@ import { WebSocket } from 'ws';
 import { type Logger, noopLogger } from './logger';
 
 type RelayResponse = Record<string, unknown>;
+type SendOptions = {
+  // Per-request response timeout in ms; 0 disables the timeout entirely.
+  timeoutMs?: number;
+};
 type PendingRequest = {
   resolver: (response: RelayResponse) => void;
   startedAt: number;
+  timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 };
 type QueuedSend = {
   action: Record<string, unknown>;
   resolve: (response: RelayResponse) => void;
   reject: (error: Error) => void;
   timeoutHandle: ReturnType<typeof setTimeout>;
+  requestTimeoutMs: number;
 };
 
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const DEFAULT_SEND_QUEUE_TIMEOUT_MS = 30_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+export type RelayClientOptions = {
+  logger?: Logger;
+  reconnectBaseDelayMs?: number;
+  sendQueueTimeoutMs?: number;
+  requestTimeoutMs?: number;
+};
 
 export class RelayClient {
   private socket: WebSocket | null = null;
@@ -24,24 +38,20 @@ export class RelayClient {
   private destroyed = false;
   private readonly reconnectBaseDelayMs: number;
   private readonly sendQueueTimeoutMs: number;
+  private readonly requestTimeoutMs: number;
   private readonly logger: Logger;
   private currentReconnectDelay: number;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly url: string,
-    loggerOrReconnectMs: Logger | number = noopLogger,
-    sendQueueTimeoutMs: number = DEFAULT_SEND_QUEUE_TIMEOUT_MS,
+    options: RelayClientOptions = {},
   ) {
-    if (typeof loggerOrReconnectMs === 'number') {
-      this.reconnectBaseDelayMs = loggerOrReconnectMs;
-      this.logger = noopLogger;
-    } else {
-      this.reconnectBaseDelayMs = 1_000;
-      this.logger = loggerOrReconnectMs;
-    }
+    this.logger = options.logger ?? noopLogger;
+    this.reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? 1_000;
+    this.sendQueueTimeoutMs = options.sendQueueTimeoutMs ?? DEFAULT_SEND_QUEUE_TIMEOUT_MS;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.currentReconnectDelay = this.reconnectBaseDelayMs;
-    this.sendQueueTimeoutMs = sendQueueTimeoutMs;
   }
 
   connect(): Promise<void> {
@@ -73,6 +83,7 @@ export class RelayClient {
       const pending = this.pendingRequests.get(requestId);
       if (pending) {
         this.pendingRequests.delete(requestId);
+        clearTimeout(pending.timeoutHandle);
         const durationMs = Date.now() - pending.startedAt;
         if (response.type === 'error') {
           this.logger.error({ requestId, code: response.code, message: response.message, durationMs }, 'relay_receive');
@@ -87,6 +98,7 @@ export class RelayClient {
       this.socket = null;
       this.logger.info({ url: this.url }, 'relay_disconnect');
       for (const [requestId, pending] of this.pendingRequests) {
+        clearTimeout(pending.timeoutHandle);
         pending.resolver({ id: requestId, type: 'error', code: 'RELAY_DISCONNECTED', message: 'Relay connection closed' });
       }
       this.pendingRequests.clear();
@@ -106,10 +118,20 @@ export class RelayClient {
     }, delay);
   }
 
-  private transmit(action: Record<string, unknown>, resolve: (response: RelayResponse) => void): void {
+  private transmit(action: Record<string, unknown>, resolve: (response: RelayResponse) => void, timeoutMs: number): void {
     const requestId = String(++this.nextId);
-    this.logger.info({ requestId, actionType: action.type }, 'relay_send');
-    this.pendingRequests.set(requestId, { resolver: resolve, startedAt: Date.now() });
+    // Capture only the type so the timer closure does not retain the full payload.
+    const actionType = action.type;
+    this.logger.info({ requestId, actionType }, 'relay_send');
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        this.logger.error({ requestId, actionType, timeoutMs }, 'relay_timeout');
+        resolve({ id: requestId, type: 'error', code: 'RELAY_TIMEOUT', message: `Relay did not respond within ${timeoutMs}ms` });
+      }, timeoutMs);
+    }
+    this.pendingRequests.set(requestId, { resolver: resolve, startedAt: Date.now(), timeoutHandle });
     this.socket!.send(JSON.stringify({ id: requestId, ...action }));
   }
 
@@ -117,21 +139,22 @@ export class RelayClient {
     const queued = this.sendQueue.splice(0);
     for (const item of queued) {
       clearTimeout(item.timeoutHandle);
-      this.transmit(item.action, item.resolve);
+      this.transmit(item.action, item.resolve, item.requestTimeoutMs);
     }
   }
 
-  send(action: Record<string, unknown>): Promise<RelayResponse> {
+  send(action: Record<string, unknown>, options?: SendOptions): Promise<RelayResponse> {
+    const requestTimeoutMs = options?.timeoutMs ?? this.requestTimeoutMs;
     return new Promise((resolve, reject) => {
       if (this.socket?.readyState === WebSocket.OPEN) {
-        this.transmit(action, resolve);
+        this.transmit(action, resolve, requestTimeoutMs);
         return;
       }
       const timeoutHandle = setTimeout(() => {
         this.sendQueue = this.sendQueue.filter((queued) => queued !== item);
         reject(new Error('Timed out waiting to connect to relay'));
       }, this.sendQueueTimeoutMs);
-      const item: QueuedSend = { action, resolve, reject, timeoutHandle };
+      const item: QueuedSend = { action, resolve, reject, timeoutHandle, requestTimeoutMs };
       this.sendQueue.push(item);
     });
   }
