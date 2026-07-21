@@ -33,6 +33,13 @@ function waitForRelayProcess(): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, 50));
 }
 
+// The extension service worker registers asynchronously after context launch;
+// serviceWorkers() is empty until then (e.g. in a beforeAll re-run after a
+// worker-process restart following a test failure).
+async function getServiceWorker(context: BrowserContext): Promise<Worker> {
+  return context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
+}
+
 // Enable driving on the service worker for the currently active tab.
 async function enableDrivingOnWorker(worker: Worker): Promise<void> {
   await worker.evaluate(() => (globalThis as unknown as { enableDriving: () => Promise<void> }).enableDriving());
@@ -125,7 +132,7 @@ test.describe('Plugin E2E', () => {
   });
 
   test('plugin connects to relay when driving is enabled', async () => {
-    const [worker] = browserContext.serviceWorkers();
+    const worker = await getServiceWorker(browserContext);
     const page = await browserContext.newPage();
     await page.goto(`http://localhost:${testServerPort}/`);
 
@@ -140,7 +147,7 @@ test.describe('Plugin E2E', () => {
   });
 
   test('plugin disconnects from relay when driving is disabled', async () => {
-    const [worker] = browserContext.serviceWorkers();
+    const worker = await getServiceWorker(browserContext);
     const page = await browserContext.newPage();
     await page.goto(`http://localhost:${testServerPort}/`);
 
@@ -157,7 +164,7 @@ test.describe('Plugin E2E', () => {
   });
 
   test('resumes driving after service worker state is reset (simulated restart)', async () => {
-    const [worker] = browserContext.serviceWorkers();
+    const worker = await getServiceWorker(browserContext);
     const page = await browserContext.newPage();
     await page.goto(`http://localhost:${testServerPort}/`);
 
@@ -199,7 +206,7 @@ test.describe('Plugin E2E', () => {
   });
 
   test('agent action succeeds after driving is enabled', async () => {
-    const [worker] = browserContext.serviceWorkers();
+    const worker = await getServiceWorker(browserContext);
     const page = await browserContext.newPage();
     await page.goto(`http://localhost:${testServerPort}/hello`);
 
@@ -214,7 +221,7 @@ test.describe('Plugin E2E', () => {
   });
 
   test('agent action is rejected again after driving is disabled', async () => {
-    const [worker] = browserContext.serviceWorkers();
+    const worker = await getServiceWorker(browserContext);
     await disableDrivingOnWorker(worker);
 
     const response = await request(agent, { id: 'g3', type: 'read_html' }) as Record<string, string>;
@@ -231,7 +238,7 @@ test.describe('Plugin E2E', () => {
     let drivingPage: Page;
 
     test.beforeAll(async () => {
-      const [worker] = browserContext.serviceWorkers();
+      const worker = await getServiceWorker(browserContext);
 
       drivingPage = await browserContext.newPage();
       await drivingPage.goto(`http://localhost:${testServerPort}/`);
@@ -240,7 +247,7 @@ test.describe('Plugin E2E', () => {
     });
 
     test.afterAll(async () => {
-      const [worker] = browserContext.serviceWorkers();
+      const worker = await getServiceWorker(browserContext);
       await disableDrivingOnWorker(worker);
       await drivingPage.close();
     });
@@ -304,6 +311,15 @@ test.describe('Plugin E2E', () => {
       expect((response.data as Record<string, string>).url).toContain(`localhost:${testServerPort}`);
     });
 
+    test('navigate reports firstPaint: true once the page has painted a frame', async () => {
+      const targetUrl = `http://localhost:${testServerPort}/navigate`;
+
+      const response = await request(agent, { id: 'n2', type: 'navigate', url: targetUrl }) as Record<string, unknown>;
+
+      expect(response.type).toBe('result');
+      expect((response.data as Record<string, unknown>).firstPaint).toBe(true);
+    });
+
     // ── click ───────────────────────────────────────────────────────────────
 
     test('click triggers the element and returns ok', async () => {
@@ -339,6 +355,74 @@ test.describe('Plugin E2E', () => {
       expect(typeof image).toBe('string');
       // PNG magic bytes in base64 always start with 'iVBOR'
       expect(image).toMatch(/^iVBOR/);
+    });
+
+    // captureVisibleTab fails transiently ("image readback failed") when the
+    // compositor has no readable frame — e.g. right after a WebGL canvas spins
+    // up, or while the window is occluded. These tests stub it on the worker to
+    // simulate both the transient and the persistent case.
+
+    test('screenshot retries when capture fails transiently', async () => {
+      const worker = await getServiceWorker(browserContext);
+      await drivingPage.goto(`http://localhost:${testServerPort}/capture`);
+
+      await worker.evaluate(() => {
+        const g = globalThis as unknown as Record<string, unknown>;
+        const tabs = (g.chrome as { tabs: Record<string, unknown> }).tabs;
+        g.__originalCapture = tabs.captureVisibleTab;
+        g.__captureCalls = 0;
+        tabs.captureVisibleTab = (...args: unknown[]) => {
+          g.__captureCalls = (g.__captureCalls as number) + 1;
+          if ((g.__captureCalls as number) <= 2) {
+            return Promise.reject(new Error('Failed to capture tab: image readback failed'));
+          }
+          return (g.__originalCapture as (...a: unknown[]) => Promise<string>)(...args);
+        };
+      });
+
+      try {
+        const response = await request(agent, { id: 's2', type: 'screenshot' }) as Record<string, unknown>;
+
+        expect(response.type).toBe('result');
+        expect((response.data as Record<string, string>).image).toMatch(/^iVBOR/);
+        const captureCalls = await worker.evaluate(() => (globalThis as unknown as Record<string, unknown>).__captureCalls);
+        expect(captureCalls).toBe(3);
+      } finally {
+        await worker.evaluate(() => {
+          const g = globalThis as unknown as Record<string, unknown>;
+          (g.chrome as { tabs: Record<string, unknown> }).tabs.captureVisibleTab = g.__originalCapture;
+        });
+      }
+    });
+
+    test('screenshot returns CAPTURE_FAILED after exhausting retries', async () => {
+      const worker = await getServiceWorker(browserContext);
+      await drivingPage.goto(`http://localhost:${testServerPort}/capture`);
+
+      await worker.evaluate(() => {
+        const g = globalThis as unknown as Record<string, unknown>;
+        const tabs = (g.chrome as { tabs: Record<string, unknown> }).tabs;
+        g.__originalCapture = tabs.captureVisibleTab;
+        g.__captureCalls = 0;
+        tabs.captureVisibleTab = () => {
+          g.__captureCalls = (g.__captureCalls as number) + 1;
+          return Promise.reject(new Error('Failed to capture tab: image readback failed'));
+        };
+      });
+
+      try {
+        const response = await request(agent, { id: 's3', type: 'screenshot' }) as Record<string, string>;
+
+        expect(response.type).toBe('error');
+        expect(response.code).toBe('CAPTURE_FAILED');
+        const captureCalls = await worker.evaluate(() => (globalThis as unknown as Record<string, unknown>).__captureCalls);
+        expect(captureCalls).toBe(3);
+      } finally {
+        await worker.evaluate(() => {
+          const g = globalThis as unknown as Record<string, unknown>;
+          (g.chrome as { tabs: Record<string, unknown> }).tabs.captureVisibleTab = g.__originalCapture;
+        });
+      }
     });
 
     // ── bundle ────────────────────────────────────────────────────────────────

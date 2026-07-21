@@ -36,6 +36,8 @@ Call `view_current_site` to get the current URL and title, then confirm the acti
 
 All tools communicate via the relay WebSocket. Every call blocks until the action completes.
 
+Every tool except `handoff` accepts an optional `timeoutMs` parameter overriding the default 10-second response timeout for that single call. If the relay does not respond within the window, the call returns a `RELAY_TIMEOUT` error. Pass a larger `timeoutMs` when an operation is expected to be slow — e.g. `navigate` to a heavy page, or `bundle` on a resource-rich site. `handoff` has no timeout: it blocks until the human finishes.
+
 ### `check_status()`
 Returns the current connection state of the entire driver stack. Always call this first.
 
@@ -56,14 +58,15 @@ Response: { id, url, title, status, active, faviconUrl }
 Use this to orient to the current page (URL, page title) before deciding what to do next. Also the cheapest way to verify the connection is alive mid-session.
 
 ### `navigate(url: string)`
-Navigates the pinned tab to `url` and waits for the page to finish loading.
+Navigates the pinned tab to `url` and waits for the page to finish loading and paint its first frame.
 
 ```
-Response: { url, status: "complete" }
+Response: { url, status: "complete", firstPaint: true }
 ```
 
 - Use full URLs including scheme (`https://`).
 - The tool blocks until the tab finishes loading — no polling or waiting is needed after the call returns.
+- `firstPaint: true` means the page has rendered at least one frame, so a screenshot will mechanically succeed — it does NOT mean dynamic content (SPA hydration, spinners) has finished. `firstPaint: false` means no frame was painted within 5 seconds — usually the browser window is occluded or minimized; a screenshot may fail with `CAPTURE_FAILED` until the window is visible again.
 - On failure: `NAVIGATION_FAILED` error — the page could not load. Check the URL, then try once more; if still failing, consider a handoff.
 
 ### `click(selector: string)`
@@ -96,7 +99,7 @@ Response: image/png content block
 ```
 
 - Use to visually verify page state when HTML is ambiguous or the page is canvas/image-heavy.
-- On failure: `CAPTURE_FAILED` — retry once, then use `read_html` as a fallback.
+- On failure: `CAPTURE_FAILED` — the plugin already retried 3 times internally, so the failure is persistent: the browser window is likely occluded, minimized, or the pinned tab is not the frontmost tab. Ask the user to bring the window into view, or use `read_html` as a fallback. Do not retry in a tight loop.
 
 ### `bundle()`
 Captures the entire current page — its live DOM plus every subresource the browser has loaded (CSS, JS, images, fonts) — into a single zip archive and returns it.
@@ -188,7 +191,8 @@ If `handoff` returns an error with `UNKNOWN` and the message contains "Plugin di
 | `DRIVING_DISABLED` | Extension has not enabled driving | Stop. Ask user to click "Enable Driving" in the popup. |
 | `ELEMENT_NOT_FOUND` | CSS selector matched nothing | Re-read HTML, fix selector, retry. After 2 failures → handoff. |
 | `NAVIGATION_FAILED` | Tab could not load the URL | Check URL validity, retry once. If bot-detected → handoff. |
-| `CAPTURE_FAILED` | Screenshot could not be taken | Retry once; fall back to `read_html`. |
+| `CAPTURE_FAILED` | Screenshot could not be taken (plugin already retried 3×) | Window is likely occluded/minimized — ask the user to make it visible, or fall back to `read_html`. |
+| `RELAY_TIMEOUT` | Relay did not respond within the timeout window (default 10 s; relay or extension hung) | Call `check_status` to verify connectivity, then retry once — pass a larger `timeoutMs` if the operation is legitimately slow. If repeated → handoff. `handoff` itself has no timeout and blocks indefinitely. |
 | `UNKNOWN` | Unexpected plugin-side error | Retry once; if repeated → handoff with a descriptive reason. |
 
 **Never loop indefinitely on errors.** If the same error recurs after one retry, either change approach or request a handoff.

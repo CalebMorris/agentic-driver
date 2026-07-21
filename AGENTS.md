@@ -9,6 +9,15 @@ Reference these docs before working in the relevant areas:
 - [Relay Server](agentic-docs/relay-server.md) — pitfalls and patterns for `server/src/relay.ts` (state machine, multi-step protocol, suppression, disconnect handling)
 - [npm Workspaces](agentic-docs/npm-workspaces.md) — workspace structure, hoisting, shared devDeps, tsconfig inheritance, canonical layout
 
+## Log Locations
+
+Runtime logs are NOT in the repo. They live in `$XDG_STATE_HOME/agentic-driver/` (default: `~/.local/state/agentic-driver/`):
+
+- `relay.log` — relay server (pino JSON lines). Also receives plugin logs: the extension mirrors its console output to the relay as `log` control messages, which the relay writes here without forwarding to the agent.
+- `mcp.log` — MCP server (pino JSON lines), including relay-client send/receive entries with request IDs, error codes, and durations.
+
+To debug a failed tool call or extension error, read these files first — do not search the repo, `/tmp`, or a `logs/` directory for log output.
+
 ## MCP Registration Scope
 
 The `install:mcp` script must register with `claude mcp add -s user` (user scope). Local scope (`-s local`) confines the server to this repo's directory, and sessions in other repos won't see the tools — the whole point is driving the browser from anywhere.

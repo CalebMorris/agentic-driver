@@ -63,7 +63,7 @@ function connect() {
     try {
       message = JSON.parse(event.data);
     } catch (error) {
-      console.error('[agentic-driver] ws_message_parse_error', { data: event.data, error: error?.message });
+      logToRelay('error', 'ws_message_parse_error', { data: String(event.data).slice(0, 200), error: error?.message });
       return;
     }
 
@@ -110,6 +110,16 @@ function sendControlMessage(payload) {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(payload));
   }
+}
+
+// Log to the console and mirror to the relay as a 'log' message, which the
+// relay writes to relay.log server-side without forwarding to the agent.
+// The relay send silently no-ops when the socket is down, so this is safe to
+// call from connection-failure paths.
+function logToRelay(level, event, context = {}) {
+  const consoleFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+  consoleFn(`[agentic-driver] ${event}`, context);
+  sendControlMessage({ type: 'log', level, event, context });
 }
 
 function updateActionIcon(isActive) {
@@ -212,7 +222,7 @@ async function handleMessage(message) {
         return errorResponse(id, 'UNKNOWN', `Unknown action type: ${type}`);
     }
   } catch (error) {
-    return errorResponse(id, 'UNKNOWN', error.message ?? 'Unexpected error');
+    return errorResponse(id, 'UNKNOWN', error.message ?? 'Unexpected error', { action: type, stack: error.stack });
   }
 }
 
@@ -223,7 +233,7 @@ async function getPinnedTab() {
   try {
     return await chrome.tabs.get(pinnedTabId);
   } catch (error) {
-    console.warn('[agentic-driver] pinned_tab_lookup_failed', { tabId: pinnedTabId, error: error?.message });
+    logToRelay('warn', 'pinned_tab_lookup_failed', { tabId: pinnedTabId, error: error?.message });
     return null;
   }
 }
@@ -262,8 +272,9 @@ async function handleNavigate(id, message) {
     await chrome.tabs.update(tab.id, { url });
     await loadComplete;
 
+    const firstPaint = await waitForFirstPaint(tab.id);
     const updatedTab = await chrome.tabs.get(tab.id);
-    return { id, type: 'result', data: { url: updatedTab?.url ?? url, status: 'complete' } };
+    return { id, type: 'result', data: { url: updatedTab?.url ?? url, status: 'complete', firstPaint } };
   } catch (error) {
     return errorResponse(id, 'NAVIGATION_FAILED', error.message ?? 'Navigation failed');
   }
@@ -310,19 +321,43 @@ async function handleReadHtml(id, message) {
   return { id, type: 'result', data: { html: result.html } };
 }
 
+// captureVisibleTab fails transiently with "image readback failed" when the
+// compositor has no readable frame yet — e.g. a WebGL canvas spinning up right
+// after navigation. captureVisibleTab is quota-limited to 2 calls/sec, so the
+// retry delay must stay above 500ms or retries fail on the quota instead.
+const CAPTURE_ATTEMPTS = 3;
+const CAPTURE_RETRY_DELAY_MS = 600;
+
 async function handleScreenshot(id) {
   const tab = await getPinnedTab();
   if (!tab) {
     return errorResponse(id, 'UNKNOWN', 'No tab is pinned for driving');
   }
-  try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-    // Strip the "data:image/png;base64," prefix
-    const base64Image = dataUrl.replace(/^data:image\/png;base64,/, '');
-    return { id, type: 'result', data: { image: base64Image } };
-  } catch (error) {
-    return errorResponse(id, 'CAPTURE_FAILED', error.message ?? 'Screenshot failed');
+  let lastError;
+  for (let attempt = 1; attempt <= CAPTURE_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      await new Promise((resolve) => setTimeout(resolve, CAPTURE_RETRY_DELAY_MS * (attempt - 1)));
+    }
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      // Strip the "data:image/png;base64," prefix
+      const base64Image = dataUrl.replace(/^data:image\/png;base64,/, '');
+      return { id, type: 'result', data: { image: base64Image } };
+    } catch (error) {
+      lastError = error;
+    }
   }
+  // tabActive/windowId reveal a common persistent cause: the pinned tab is not
+  // the active tab of a visible window, so Chrome refuses the capture. A fully
+  // occluded or minimized window fails the same way even with tabActive=true.
+  return errorResponse(id, 'CAPTURE_FAILED', lastError.message ?? 'Screenshot failed', {
+    action: 'screenshot',
+    attempts: CAPTURE_ATTEMPTS,
+    tabId: tab.id,
+    windowId: tab.windowId,
+    tabActive: tab.active,
+    tabStatus: tab.status,
+  });
 }
 
 async function handleBundle(id) {
@@ -356,7 +391,7 @@ async function handleBundle(id) {
       seenPaths.add(archivePath);
       files.push({ path: archivePath, bytes });
     } catch (error) {
-      console.warn('[agentic-driver] bundle_resource_fetch_failed', { url: resourceUrl, error: error?.message });
+      logToRelay('warn', 'bundle_resource_fetch_failed', { url: resourceUrl, error: error?.message });
     }
   }
 
@@ -410,7 +445,29 @@ function waitForTabComplete(tabId) {
   });
 }
 
-function errorResponse(id, code, message) {
+// tab status 'complete' fires on the document load event, before the compositor
+// has produced a frame — capturing at that point fails with "image readback
+// failed" (WebGL-heavy pages have the longest gap). Two nested rAF callbacks
+// guarantee at least one full frame was rendered. rAF never fires in occluded
+// or minimized windows, so a timeout resolves false instead of hanging navigate.
+async function waitForFirstPaint(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => new Promise((resolve) => {
+        setTimeout(() => resolve(false), 5000);
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+      }),
+    });
+    return results[0]?.result === true;
+  } catch {
+    // Injection refused (chrome:// and similar) — the load itself completed.
+    return false;
+  }
+}
+
+function errorResponse(id, code, message, context = {}) {
+  logToRelay('error', 'action_error', { id, code, message, ...context });
   return { id, type: 'error', code, message };
 }
 
@@ -436,7 +493,7 @@ function resourceUrlToArchivePath(rawUrl, seenPaths) {
     if (pathname === '' || pathname.endsWith('/')) pathname += 'index';
     candidate = `${parsed.hostname}${pathname}`;
   } catch (error) {
-    console.warn('[agentic-driver] archive_path_url_parse_failed', { url: rawUrl, error: error?.message });
+    logToRelay('warn', 'archive_path_url_parse_failed', { url: rawUrl, error: error?.message });
     candidate = 'resource';
   }
   candidate = candidate.replace(/^\/+/, '').replace(/[^a-zA-Z0-9._/-]/g, '_');

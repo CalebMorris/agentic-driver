@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocketServer, WebSocket } from 'ws';
 import { RelayClient } from './relay-client';
-import { createTestLogger } from './test-helpers';
+import { createTestLogger, mockRelayRespond } from './test-helpers';
 
 function waitForRelayProcess(): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, 10));
@@ -78,7 +78,7 @@ describe('RelayClient', () => {
 
   it('auto-reconnects after the relay drops the connection', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
-    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, 50);
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50 });
     await client.connect();
     const serverSocket = await serverSocketPromise;
 
@@ -96,7 +96,7 @@ describe('RelayClient', () => {
 
   it('does not reconnect after explicit close()', async () => {
     await startServer();
-    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, 50);
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50 });
     await client.connect();
 
     client.close();
@@ -109,7 +109,7 @@ describe('RelayClient', () => {
 
   it('send() queues while disconnected and resolves after reconnect', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
-    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, 50);
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50 });
     await client.connect();
     const serverSocket = await serverSocketPromise;
 
@@ -140,7 +140,7 @@ describe('RelayClient', () => {
   it('send() rejects with timeout error when relay never comes back', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
     // sendQueueTimeoutMs = 100ms so the test is fast.
-    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, 50, 100);
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50, sendQueueTimeoutMs: 100 });
     await client.connect();
     const serverSocket = await serverSocketPromise;
 
@@ -154,9 +154,65 @@ describe('RelayClient', () => {
     client.close();
   });
 
+  it('send() resolves with RELAY_TIMEOUT when the relay never responds', async () => {
+    await startServer();
+    // requestTimeoutMs = 100ms so the test is fast; the server never replies.
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50, requestTimeoutMs: 100 });
+    await client.connect();
+
+    const response = await client.send({ type: 'read_html' });
+
+    expect(response.type).toBe('error');
+    expect(response.code).toBe('RELAY_TIMEOUT');
+    expect(response.message).toContain('100');
+    client.close();
+  });
+
+  it('per-call timeoutMs overrides the default request timeout', async () => {
+    await startServer();
+    // Default timeout is long; the per-call override should win.
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50, requestTimeoutMs: 30_000 });
+    await client.connect();
+
+    const response = await client.send({ type: 'read_html' }, { timeoutMs: 100 });
+
+    expect(response.type).toBe('error');
+    expect(response.code).toBe('RELAY_TIMEOUT');
+    client.close();
+  });
+
+  it('per-call timeoutMs of 0 disables the request timeout', async () => {
+    const { serverSocket: serverSocketPromise } = await startServer();
+    // Default timeout is short; the response arrives well after it.
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50, requestTimeoutMs: 100 });
+    await client.connect();
+    const serverSocket = await serverSocketPromise;
+
+    mockRelayRespond(serverSocket, { type: 'result', data: {} }, 250);
+
+    const response = await client.send({ type: 'handoff' }, { timeoutMs: 0 });
+
+    expect(response.type).toBe('result');
+    client.close();
+  });
+
+  it('response arriving before the request timeout resolves normally', async () => {
+    const { serverSocket: serverSocketPromise } = await startServer();
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50, requestTimeoutMs: 200 });
+    await client.connect();
+    const serverSocket = await serverSocketPromise;
+
+    mockRelayRespond(serverSocket, { type: 'result', data: { status: 'ok' } });
+
+    const response = await client.send({ type: 'click', selector: '#btn' });
+
+    expect(response.type).toBe('result');
+    client.close();
+  });
+
   it('close() rejects queued sends', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
-    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, 50);
+    const client = new RelayClient(`ws://localhost:${TEST_PORT}`, { reconnectBaseDelayMs: 50 });
     await client.connect();
     const serverSocket = await serverSocketPromise;
 
@@ -194,7 +250,7 @@ describe('RelayClient — structured logging', () => {
   it('logs relay_connect on successful connection', async () => {
     await startServer();
     const { logger, lines } = createTestLogger();
-    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, logger);
+    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, { logger });
     await client.connect();
 
     expect(lines).toContainEqual(expect.objectContaining({ level: PINO_INFO, msg: 'relay_connect' }));
@@ -204,7 +260,7 @@ describe('RelayClient — structured logging', () => {
   it('logs relay_send when sending an action', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
     const { logger, lines } = createTestLogger();
-    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, logger);
+    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, { logger });
     await client.connect();
 
     const serverSocket = await serverSocketPromise;
@@ -225,7 +281,7 @@ describe('RelayClient — structured logging', () => {
   it('logs relay_receive info on successful response', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
     const { logger, lines } = createTestLogger();
-    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, logger);
+    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, { logger });
     await client.connect();
 
     const serverSocket = await serverSocketPromise;
@@ -246,7 +302,7 @@ describe('RelayClient — structured logging', () => {
   it('logs relay_receive error on error response', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
     const { logger, lines } = createTestLogger();
-    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, logger);
+    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, { logger });
     await client.connect();
 
     const serverSocket = await serverSocketPromise;
@@ -263,10 +319,26 @@ describe('RelayClient — structured logging', () => {
     client.close();
   });
 
+  it('logs relay_timeout when a request times out', async () => {
+    await startServer();
+    const { logger, lines } = createTestLogger();
+    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, { logger, requestTimeoutMs: 50 });
+    await client.connect();
+
+    await client.send({ type: 'read_html' });
+
+    const timeoutLog = lines.find((line) => line.msg === 'relay_timeout');
+    expect(timeoutLog).toBeDefined();
+    expect(timeoutLog?.level).toBe(PINO_ERROR);
+    expect(timeoutLog?.timeoutMs).toBe(50);
+    expect(typeof timeoutLog?.requestId).toBe('string');
+    client.close();
+  });
+
   it('logs relay_disconnect when connection closes', async () => {
     const { serverSocket: serverSocketPromise } = await startServer();
     const { logger, lines } = createTestLogger();
-    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, logger);
+    const client = new RelayClient(`ws://localhost:${LOGGING_TEST_PORT}`, { logger });
     await client.connect();
 
     const serverSocket = await serverSocketPromise;

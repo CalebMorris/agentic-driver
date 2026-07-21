@@ -5,6 +5,15 @@ import { RelayClient } from './relay-client';
 
 type RelayResponse = Record<string, unknown>;
 
+// Agent-facing per-call override of the default 10s relay response timeout.
+// Transport-level only — never forwarded in the relay payload.
+const timeoutMsSchema = z
+  .number()
+  .int()
+  .positive()
+  .optional()
+  .describe('Override the default 10s response timeout for this call, in milliseconds. Use for operations expected to be slow.');
+
 function textResult(data: unknown) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(data) }],
@@ -77,12 +86,13 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
     'check_status',
     {
       description: 'Check whether the agentic driver is ready to use. Returns whether the MCP adapter is connected to the relay server, whether the browser plugin is connected to the relay, and whether driving has been enabled in the plugin UI.',
+      inputSchema: { timeoutMs: timeoutMsSchema },
     },
-    async () => {
+    async ({ timeoutMs }) => {
       if (!relayClient.isConnected()) {
         return textResult({ relayConnected: false, pluginConnected: false, drivingEnabled: false });
       }
-      const response = await relayClient.send({ type: 'status' });
+      const response = await relayClient.send({ type: 'status' }, { timeoutMs });
       if (response.type === 'error') {
         return errorResult(response.code, response.message);
       }
@@ -94,18 +104,18 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
     'navigate',
     {
       description: 'Navigate the pinned browser tab to a URL and wait for it to finish loading.',
-      inputSchema: { url: z.string().describe('URL to navigate to') },
+      inputSchema: { url: z.string().describe('URL to navigate to'), timeoutMs: timeoutMsSchema },
     },
-    async ({ url }) => handleRelayResponse(await relayClient.send({ type: 'navigate', url }))
+    async ({ url, timeoutMs }) => handleRelayResponse(await relayClient.send({ type: 'navigate', url }, { timeoutMs }))
   );
 
   server.registerTool(
     'click',
     {
       description: 'Click an element in the pinned browser tab identified by a CSS selector.',
-      inputSchema: { selector: z.string().describe('CSS selector of the element to click') },
+      inputSchema: { selector: z.string().describe('CSS selector of the element to click'), timeoutMs: timeoutMsSchema },
     },
-    async ({ selector }) => handleRelayResponse(await relayClient.send({ type: 'click', selector }))
+    async ({ selector, timeoutMs }) => handleRelayResponse(await relayClient.send({ type: 'click', selector }, { timeoutMs }))
   );
 
   server.registerTool(
@@ -116,12 +126,13 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
         selector: z.string().optional().describe(
           'CSS selector to scope the returned HTML; returns full page HTML if omitted'
         ),
+        timeoutMs: timeoutMsSchema,
       },
     },
-    async ({ selector }) => {
+    async ({ selector, timeoutMs }) => {
       const payload: Record<string, unknown> = { type: 'read_html' };
       if (selector !== undefined) payload.selector = selector;
-      return handleRelayResponse(await relayClient.send(payload));
+      return handleRelayResponse(await relayClient.send(payload, { timeoutMs }));
     }
   );
 
@@ -129,9 +140,10 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
     'screenshot',
     {
       description: 'Capture a screenshot of the pinned browser tab and return it as a base64-encoded PNG.',
+      inputSchema: { timeoutMs: timeoutMsSchema },
     },
-    async () => {
-      const response = await relayClient.send({ type: 'screenshot' });
+    async ({ timeoutMs }) => {
+      const response = await relayClient.send({ type: 'screenshot' }, { timeoutMs });
       if (response.type === 'error') {
         return errorResult(response.code, response.message);
       }
@@ -147,9 +159,10 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
     {
       description:
         'Bundle the entire current page — its live DOM plus every subresource the browser has loaded (CSS, JS, images, fonts) — into a single zip archive and return it. Use to snapshot or archive a site for offline analysis. The archive can be large.',
+      inputSchema: { timeoutMs: timeoutMsSchema },
     },
-    async () => {
-      const response = await relayClient.send({ type: 'bundle' });
+    async ({ timeoutMs }) => {
+      const response = await relayClient.send({ type: 'bundle' }, { timeoutMs });
       if (response.type === 'error') {
         return errorResult(response.code, response.message);
       }
@@ -173,8 +186,9 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
     'view_current_site',
     {
       description: 'Get information about the current page in the pinned browser tab (URL, title, status).',
+      inputSchema: { timeoutMs: timeoutMsSchema },
     },
-    async () => handleRelayResponse(await relayClient.send({ type: 'view_current_site' }))
+    async ({ timeoutMs }) => handleRelayResponse(await relayClient.send({ type: 'view_current_site' }, { timeoutMs }))
   );
 
   server.registerTool(
@@ -183,7 +197,8 @@ export function createMcpServer(relayClient: RelayClient, logger: Logger = noopL
       description: 'Pause agent control and hand off to a human. Blocks until the human signals they are done. Use when encountering Cloudflare challenges, login walls, or other situations requiring human intervention.',
       inputSchema: { reason: z.string().describe('Reason for the handoff, shown to the human in the plugin UI') },
     },
-    async ({ reason }) => handleRelayResponse(await relayClient.send({ type: 'handoff', reason }))
+    // No response timeout: handoff blocks until a human finishes, which can take arbitrarily long.
+    async ({ reason }) => handleRelayResponse(await relayClient.send({ type: 'handoff', reason }, { timeoutMs: 0 }))
   );
 
   return server;
