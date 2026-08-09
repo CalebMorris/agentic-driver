@@ -47,11 +47,30 @@ This installs the `drive` skill globally, giving Claude the operating procedure 
 
 ### 5. Start the relay server
 
+Run it once per session:
+
 ```sh
 npm run start -w server
 ```
 
 Leave it running — the extension and the MCP adapter both connect to it.
+
+**Or install it as a background daemon** so it starts automatically and you never have to run it manually:
+
+```sh
+npm run build -w server   # if you haven't already
+npm run install:daemon
+```
+
+This registers the relay as a per-user service — a systemd user unit on Linux (`~/.config/systemd/user/agentic-driver-relay.service`, enabled with `loginctl enable-linger` so it also starts at boot) or a launchd LaunchAgent on macOS (`~/Library/LaunchAgents/com.agenticdriver.relay.plist`, `RunAtLoad` + `KeepAlive`). It restarts automatically on crash and starts on every login from then on.
+
+| | Linux (systemd) | macOS (launchd) |
+|---|---|---|
+| Status | `systemctl --user status agentic-driver-relay` | `launchctl print gui/$(id -u)/com.agenticdriver.relay` |
+| Logs | `journalctl --user -u agentic-driver-relay -f` | `tail -f ~/.local/state/agentic-driver/relay-daemon.std{out,err}.log` |
+| Restart | `systemctl --user restart agentic-driver-relay` | `launchctl kickstart -k gui/$(id -u)/com.agenticdriver.relay` |
+
+To remove it: `npm run uninstall:daemon`.
 
 ### 6. Drive
 
